@@ -38,6 +38,28 @@ const state = {
 
 let unsubscribeItems = null;
 
+// Catch any error that escapes a try/catch so we can see its actual shape.
+// OBR rejects with plain objects ({code, message, ...}); a default browser console
+// renders these as just "Object" which is useless. Stringify the own properties.
+function stringifyErr(err) {
+  if (!err) return String(err);
+  if (typeof err === 'string') return err;
+  try {
+    const keys = Object.getOwnPropertyNames(err);
+    const out = {};
+    for (const k of keys) out[k] = err[k];
+    return JSON.stringify(out);
+  } catch (_) {
+    return String(err);
+  }
+}
+window.addEventListener('error', (e) => {
+  console.error('[MP] window.error', stringifyErr(e.error || e.message));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[MP] unhandledrejection', stringifyErr(e.reason));
+});
+
 main();
 
 async function main() {
@@ -78,8 +100,21 @@ async function onOwlbearReady() {
     log(`player.getRole failed: ${err?.message || err}`);
   }
 
-  await registerTokenTaggingMenu();
-  state.items = await OBR.scene.items.getItems();
+  try {
+    console.log('[MP] step: registerTokenTaggingMenu');
+    await registerTokenTaggingMenu();
+  } catch (err) {
+    console.error('[MP] registerTokenTaggingMenu failed:', stringifyErr(err));
+  }
+
+  try {
+    console.log('[MP] step: getItems');
+    state.items = await OBR.scene.items.getItems();
+  } catch (err) {
+    console.error('[MP] getItems failed:', stringifyErr(err));
+    state.items = [];
+  }
+
   const tagged = state.items.filter((i) => i?.metadata?.[METADATA_NAMESPACE]);
   console.log(
     `[MP] init: items=${state.items.length} tagged=${tagged.length}` +
@@ -87,12 +122,26 @@ async function onOwlbearReady() {
         ? ' tags=[' + tagged.map((i) => i.metadata[METADATA_NAMESPACE].role + ':' + (i.metadata[METADATA_NAMESPACE].name || i.metadata[METADATA_NAMESPACE].archetype || 'boss')).join(',') + ']'
         : ''),
   );
-  renderAll();
 
-  unsubscribeItems = OBR.scene.items.onChange((items) => {
-    state.items = items;
+  // Detailed dump: log first ~3 items' type+layer so we can see what the scene actually has.
+  for (const it of state.items.slice(0, 5)) {
+    console.log('[MP] item sample:', JSON.stringify({ id: it.id, type: it.type, layer: it.layer, name: it.name, hasMeta: !!it?.metadata?.[METADATA_NAMESPACE] }));
+  }
+
+  try {
     renderAll();
-  });
+  } catch (err) {
+    console.error('[MP] renderAll failed:', stringifyErr(err));
+  }
+
+  try {
+    unsubscribeItems = OBR.scene.items.onChange((items) => {
+      state.items = items;
+      try { renderAll(); } catch (err) { console.error('[MP] onChange renderAll:', stringifyErr(err)); }
+    });
+  } catch (err) {
+    console.error('[MP] onChange subscribe failed:', stringifyErr(err));
+  }
 
   window.addEventListener('beforeunload', () => {
     if (unsubscribeItems) unsubscribeItems();
@@ -172,6 +221,7 @@ async function registerTokenTaggingMenu() {
         },
       });
     } catch (err) {
+      console.error(`[MP] contextMenu.create(${entry.id}) failed:`, stringifyErr(err));
       log(`contextMenu.create(${entry.id}) failed: ${err?.message || err}`);
     }
   }
