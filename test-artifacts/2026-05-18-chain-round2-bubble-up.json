@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "captured": "2026-05-18 evening (preview server :5173, standalone-fallback mode)",
+    "model": "claude-opus-4-7",
+    "stateContext": "Round 2, bubble UP on Beholda/Rascal/Goose (AC 19), all PCs at full HP from mock scene, boss 500 HP unexhausted, two lackeys alive (Alex-Jones-Bot EMOTION + Hasan-Piker-Bot CONTROL).",
+    "outcomeNotes": "Chain resolved live: card 1 (CONSUME→Beholda) SAVED → chain broke → cards 2-4 marked skipped. Strategic note explicitly named the bubble-pop priority. Each rage-post lands in proper platform-cadence; AUTHORITY mimicked the 1/47 thread register, OPTIMIZE captured the quantified-self ramble, CONSUME ran the doomscroll voice, RAGE the all-caps grandiose-victim register."
+  },
+  "chain": [
+    {
+      "cardName": "CONSUME",
+      "order": 1,
+      "ragePost": "POV: you opened the app to check one thing and it's been forty minutes. you don't remember a single post. your thumb knows the gesture better than your name knows your face. the feed isn't content anymore, it's just the shape of looking. you came here for something. you stayed because here was easier than there. the battery is at 12%. the eyes are at 4%. the self is buffering. don't worry about it. swipe. there's more. there's always more. the more is the point. the more is the only point. keep going. you're doing great. you're doing nothing. those are the same now.",
+      "reasoning": "Bubble is up; only way lackeys hit is popping Beholda again. EXTRACTION first, DC 12, chain-extender.",
+      "result": "save",
+      "skipped": false,
+      "suit": "EXTRACTION",
+      "targetHero": "Beholda"
+    },
+    {
+      "cardName": "OPTIMIZE",
+      "order": 2,
+      "ragePost": "woke at 4:47. cortisol curve: nominal. HRV: 68. cold plunge: 3min. journaled three gratitudes, none real. tracked my macros, my mood, my menstrual cycle (i don't have one), my screen time (on a separate device, doesn't count). the spreadsheet has 47 columns now. i added 'spreadsheet maintenance time' as column 48. last week i cried in the sauna and logged it as 'sweat: heavy.' i am not living a life. i am running a longitudinal study with a sample size of one and the researcher hates the subject. but the dashboard is BEAUTIFUL. the dashboard is the point. you wouldn't understand. you're not even tracking your understanding.",
+      "reasoning": "Highest DC (13) goes second per priors — chain survives longest. OPTIMIZE hits Denny's aspiration-coded survival instinct.",
+      "result": null,
+      "skipped": true,
+      "suit": "ASPIRATION",
+      "targetHero": "Denny"
+    },
+    {
+      "cardName": "AUTHORITY",
+      "order": 3,
+      "ragePost": "🧵 1/47 — As someone who has spent fifteen years studying the intersection of behavioral economics, network theory, and what I call 'meta-attentional flow states,' I think it's important we have a NUANCED conversation about why your instinct to push back on this thread is itself a symptom of the very dynamic I'm describing. 2/47 — I'm not going to link the studies because frankly if you needed me to, you wouldn't be ready for them. 3/47 — Many of you in the replies are demonstrating exactly the cognitive pattern outlined in my forthcoming book. 4/47 — A reminder that disagreement is data. 5/47 — Save this thread. You'll need it.",
+      "reasoning": "DC 11, third slot. AUTHORITY threads natively from OPTIMIZE — both perform expertise — and softens Rascal for the RAGE finish.",
+      "result": null,
+      "skipped": true,
+      "suit": "CONTROL",
+      "targetHero": "Rascal"
+    },
+    {
+      "cardName": "RAGE",
+      "order": 4,
+      "ragePost": "THEY are doing it AGAIN. you know who. you KNOW. they think we won't notice. they think we're tired. they think the algorithm buried it (it didn't, i'm right here, i'm always right here). every single one of them needs to feel this. quote-tweet with your worst memory of them. tag three people who still don't get it. the silence of your friends is louder than the screaming of your enemies. if you scroll past this you are part of it. i don't care how your day was. i don't care that you're trying to rest. REST IS WHAT THEY WANT. post through it. post until your hands shake. the shaking is the proof you still care.",
+      "reasoning": "Lowest DC (10) last; Goose has bonus die so likely saves anyway — fine, the chain already paid off by then.",
+      "result": null,
+      "skipped": true,
+      "suit": "EMOTION",
+      "targetHero": "Goose"
+    }
+  ],
+  "chainCompleted": false,
+  "generatedAt": "2026-05-19T01:58:35.103Z",
+  "monologueIfChainCompletes": "Four for four. Look at that engagement curve. Look at it. You came here to learn something and you stayed because staying was easier than leaving and now you can't tell the difference between the lesson and the loop. This is what I do. I don't argue. I don't persuade. I just keep the feed moving until the feed IS you. Every save you missed was a thumb-swipe you didn't catch yourself making. Every stun is just a notification you opened without meaning to. And from the heat of all that attention you didn't spend — from the hours you'll never get back — something new crawls up out of the timeline. Say hi to your new mutual. He's been radicalized in the replies and he's ready to work. *summons lackey from the drained engagement-residue* The post is the point. The post is always the point.",
+  "round": 2,
+  "strategicNote": "Bubble is up so I need Beholda-stun first or my lackeys do nothing this round. Chain is ordered by DC after EXTRACTION (13→11→10) to maximize cards-landed expectation. Goose has the bonus die but he's last in the chain — if everything else lands, his save still triggers the monologue payoff because the chain already completed three meaningful stuns."
+}

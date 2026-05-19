@@ -1,0 +1,16 @@
+{
+  "$schema": "https://owlbear.rodeo/manifest-schema.json",
+  "_comment": "Deployed via GitHub Pages: https://grimgriz.github.io/monster-party-owlbear/extension-iframe/manifest.json. All inner URLs are relative to this manifest. Action-type embed is per-user (GM-private when only the GM clicks the action icon); kickoff doc Open Question 3.",
+  "name": "Monster Party — Villain Claude",
+  "version": "0.0.1",
+  "description": "GM-side AI villain for the They Live Monster Party boss fight. Reads scene state, calls Anthropic, returns a card + rage-post.",
+  "author": "GrimGriz",
+  "homepage": "https://thislittlecorner.net",
+  "manifest": [
+    {
+      "type": "action",
+      "title": "Villain Claude (GM)",
+      "url": "index.html"
+    }
+  ]
+}

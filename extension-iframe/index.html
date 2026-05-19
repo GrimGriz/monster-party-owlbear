@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Monster Party — Villain Claude (GM)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 16px;
+           background: #0d0d12; color: #e8e8ee; font-size: 13px; line-height: 1.45; }
+    h1 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 12px; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #b8b8d0;
+         margin: 0 0 8px; }
+    section { margin-bottom: 14px; padding: 12px; background: #16161e; border-radius: 6px; }
+    details > summary { cursor: pointer; font-size: 11px; text-transform: uppercase;
+                        letter-spacing: 0.5px; color: #8a8a9a; margin-bottom: 8px; }
+    label { display: block; font-size: 11px; text-transform: uppercase; color: #8a8a9a;
+            margin-bottom: 4px; }
+    input, textarea, select { width: 100%; padding: 6px 8px; background: #1f1f2a; color: #e8e8ee;
+                      border: 1px solid #2a2a38; border-radius: 4px; font-family: inherit;
+                      font-size: 13px; box-sizing: border-box; }
+    button { background: #5a3aff; color: white; border: none; padding: 8px 14px;
+             border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
+    button:hover { background: #6b4dff; }
+    button:disabled { background: #2a2a38; color: #6a6a7a; cursor: not-allowed; }
+    button.ghost { background: transparent; color: #b8b8d0; border: 1px solid #2a2a38; }
+    button.ghost:hover { background: #1f1f2a; }
+    button.saved { background: #2a7a4a; }
+    button.failed { background: #c0392b; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row > * { flex: 0 0 auto; }
+    .grid-overrides { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .pc-list { display: grid; gap: 6px; }
+    .pc-row { display: grid; grid-template-columns: 70px 60px 60px 60px 1fr; gap: 6px;
+              align-items: center; padding: 4px 6px; background: #1f1f2a; border-radius: 4px;
+              font-size: 12px; }
+    .pc-name { font-weight: 600; }
+    .pc-name.bubbled { color: #6bdcff; }
+    .pc-name.stunned { color: #ff8866; }
+    .chain-card { background: #1a1226; border-left: 3px solid #5a3aff; padding: 10px 12px;
+                  margin-bottom: 8px; border-radius: 0 4px 4px 0; }
+    .chain-card.resolved-save { border-left-color: #2a7a4a; opacity: 0.75; }
+    .chain-card.resolved-fail { border-left-color: #c0392b; }
+    .chain-card.skipped { opacity: 0.4; border-left-color: #444; }
+    .chain-meta { font-size: 11px; color: #8a8a9a; margin-bottom: 4px; text-transform: uppercase;
+                  letter-spacing: 0.5px; }
+    .rage-post { white-space: pre-wrap; font-size: 13px; line-height: 1.5; margin: 6px 0; }
+    .resolve-row { margin-top: 6px; }
+    .history-round { padding: 8px; background: #1f1f2a; border-radius: 4px; margin-bottom: 6px;
+                     font-size: 12px; }
+    .error { color: #ff6b6b; }
+    .muted { color: #8a8a9a; font-size: 11px; }
+    pre.json { background: #1f1f2a; padding: 8px; border-radius: 4px; font-size: 11px;
+               line-height: 1.4; white-space: pre; overflow-x: auto; max-height: 260px; }
+    .copy-block { position: relative; }
+    .copy-block button.copy { position: absolute; top: 6px; right: 6px; padding: 4px 8px;
+                              font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Villain Claude — GM Panel</h1>
+
+  <section id="battle-state">
+    <h2>Battle state</h2>
+    <div class="grid-overrides">
+      <div>
+        <label>Round</label>
+        <input type="number" id="ov-round" min="1" value="1" />
+      </div>
+      <div>
+        <label>Emoji winner</label>
+        <select id="ov-bonus-die">
+          <option value="">—</option>
+          <option>Denny</option>
+          <option>Beholda</option>
+          <option>Rascal</option>
+          <option>Goose</option>
+        </select>
+      </div>
+      <div>
+        <label>Rescued emojis</label>
+        <input type="number" id="ov-rescued" min="0" value="0" />
+      </div>
+    </div>
+    <div id="pc-list" class="pc-list" style="margin-top: 10px;"></div>
+    <div id="boss-line" style="margin-top: 8px;"></div>
+    <div id="lackey-list" style="margin-top: 6px;"></div>
+    <details style="margin-top: 8px;">
+      <summary>Raw BattleState JSON</summary>
+      <pre class="json" id="state-display">(loading…)</pre>
+    </details>
+  </section>
+
+  <section id="villain-turn">
+    <h2>Villain chain (current round)</h2>
+    <div class="row" style="margin-bottom: 8px;">
+      <button id="generate-chain">Generate 4-card chain</button>
+      <button id="clear-chain" class="ghost">Clear</button>
+      <span id="chain-status" class="muted"></span>
+    </div>
+    <div id="chain-display"></div>
+    <div id="strategic-note" class="muted" style="margin-top: 6px;"></div>
+    <div id="monologue-block" style="display:none; margin-top:10px;">
+      <h2>Monologue (only if chain completes)</h2>
+      <div id="monologue-text" class="rage-post"></div>
+    </div>
+  </section>
+
+  <section id="round-finalize" style="display:none;">
+    <h2>End of round</h2>
+    <label>Hero turn summary (free-text, fed to villain next turn)</label>
+    <textarea id="hero-summary" rows="3" placeholder="e.g. Denny taunted, hit. Beholda gaze 40 dmg. Rascal fireball 30 AoE. Goose group-heal +40."></textarea>
+    <div class="row" style="margin-top: 8px;">
+      <button id="end-round">End round &amp; log</button>
+    </div>
+  </section>
+
+  <section id="history-section">
+    <h2>History</h2>
+    <div id="history-list"></div>
+    <div class="row" style="margin-top: 8px;">
+      <button id="copy-history" class="ghost">Copy full history</button>
+      <button id="clear-history" class="ghost">Clear history</button>
+    </div>
+  </section>
+
+  <details>
+    <summary>Settings</summary>
+    <section style="margin-top: 8px;">
+      <label>Anthropic API key (stored in localStorage, sent only to api.anthropic.com)</label>
+      <input type="password" id="api-key" placeholder="sk-ant-..." />
+      <label style="margin-top: 8px;">Model</label>
+      <select id="model">
+        <option value="claude-opus-4-7">claude-opus-4-7 (best strategic play)</option>
+        <option value="claude-sonnet-4-6">claude-sonnet-4-6 (faster, cheaper)</option>
+      </select>
+      <div class="row" style="margin-top: 8px;">
+        <button id="save-settings">Save</button>
+        <span id="settings-status" class="muted"></span>
+      </div>
+    </section>
+  </details>
+
+  <!-- SDK imported in app.js from jsdelivr ESM bundle:
+       https://cdn.jsdelivr.net/npm/@owlbear-rodeo/sdk@3.1.0/+esm
+       Standalone-fallback renders mock state when not loaded inside OBR. -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
