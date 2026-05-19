@@ -1,16 +1,16 @@
 {
   "$schema": "https://owlbear.rodeo/manifest-schema.json",
-  "_comment": "Deployed via GitHub Pages: https://grimgriz.github.io/monster-party-owlbear/extension-iframe/manifest.json. All inner URLs are relative to this manifest. Action-type embed is per-user (GM-private when only the GM clicks the action icon); kickoff doc Open Question 3.",
+  "_comment": "OBR manifest schema (verified 2026-05-19 against obr-fogofwar and the OBR tutorial). manifest_version:1 + top-level action object. Absolute URLs used so paths don't get re-resolved against the GH Pages subpath. Action popover is per-user; only the GM clicks it.",
   "name": "Monster Party — Villain Claude",
   "version": "0.0.1",
-  "description": "GM-side AI villain for the They Live Monster Party boss fight. Reads scene state, calls Anthropic, returns a card + rage-post.",
+  "manifest_version": 1,
   "author": "GrimGriz",
-  "homepage": "https://thislittlecorner.net",
-  "manifest": [
-    {
-      "type": "action",
-      "title": "Villain Claude (GM)",
-      "url": "index.html"
-    }
-  ]
+  "description": "GM-side AI villain for the They Live Monster Party boss fight. Reads scene state, calls Anthropic, returns a card + rage-post.",
+  "action": {
+    "title": "Villain Claude (GM)",
+    "icon": "https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg",
+    "popover": "https://grimgriz.github.io/monster-party-owlbear/extension-iframe/index.html",
+    "height": 780,
+    "width": 520
+  }
 }

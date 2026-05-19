@@ -138,7 +138,7 @@ async function registerTokenTaggingMenu() {
       await OBR.contextMenu.create({
         id: entry.id,
         icons: [
-          { icon: 'action-icon.svg', label: entry.label, filter: { roles: ['GM'] } },
+          { icon: 'https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg', label: entry.label, filter: { roles: ['GM'] } },
         ],
         onClick: (context) => writeTagToSelection(context.items, entry.tag),
       });
