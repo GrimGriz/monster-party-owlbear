@@ -80,6 +80,13 @@ async function onOwlbearReady() {
 
   await registerTokenTaggingMenu();
   state.items = await OBR.scene.items.getItems();
+  const tagged = state.items.filter((i) => i?.metadata?.[METADATA_NAMESPACE]);
+  console.log(
+    `[MP] init: items=${state.items.length} tagged=${tagged.length}` +
+      (tagged.length
+        ? ' tags=[' + tagged.map((i) => i.metadata[METADATA_NAMESPACE].role + ':' + (i.metadata[METADATA_NAMESPACE].name || i.metadata[METADATA_NAMESPACE].archetype || 'boss')).join(',') + ']'
+        : ''),
+  );
   renderAll();
 
   unsubscribeItems = OBR.scene.items.onChange((items) => {
@@ -138,9 +145,31 @@ async function registerTokenTaggingMenu() {
       await OBR.contextMenu.create({
         id: entry.id,
         icons: [
-          { icon: 'https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg', label: entry.label, filter: { roles: ['GM'] } },
+          {
+            icon: 'https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg',
+            label: entry.label,
+            // every: [{ layer: CHARACTER }] restricts the menu to actual character tokens.
+            // Stat-Bubbles overlays are on non-CHARACTER layers (PROP/ATTACHMENT/NOTE),
+            // so without this filter the right-click can land on a bubble and tag the
+            // wrong item — serializer then never finds a PC.
+            filter: {
+              roles: ['GM'],
+              every: [{ key: 'layer', value: 'CHARACTER' }],
+            },
+          },
         ],
-        onClick: (context) => writeTagToSelection(context.items, entry.tag),
+        onClick: (context) => {
+          const items = context.items || [];
+          // One-line diagnostic per click so we can see what OBR actually delivers.
+          // Logs item count, first item's type/layer, and the tag we're about to write.
+          const first = items[0];
+          console.log(
+            `[MP] ${entry.id} click → items=${items.length}` +
+              (first ? ` first.type=${first.type} first.layer=${first.layer} first.id=${first.id}` : ' (no items)') +
+              ` tag=${entry.tag ? entry.tag.role + ':' + (entry.tag.name || entry.tag.archetype || 'boss') : 'CLEAR'}`,
+          );
+          return writeTagToSelection(items, entry.tag);
+        },
       });
     } catch (err) {
       log(`contextMenu.create(${entry.id}) failed: ${err?.message || err}`);
