@@ -1,6 +1,4 @@
 {
-  "$schema": "https://owlbear.rodeo/manifest-schema.json",
-  "_comment": "OBR manifest schema (verified 2026-05-19 against obr-fogofwar and the OBR tutorial). manifest_version:1 + top-level action object. Absolute URLs used so paths don't get re-resolved against the GH Pages subpath. Action popover is per-user; only the GM clicks it.",
   "name": "Monster Party — Villain Claude",
   "version": "0.0.1",
   "manifest_version": 1,
