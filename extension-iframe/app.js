@@ -100,6 +100,7 @@ async function onOwlbearReady() {
     log(`player.getRole failed: ${err?.message || err}`);
   }
 
+  // Context menu doesn't depend on scene-ready — register once at SDK-ready.
   try {
     console.log('[MP] step: registerTokenTaggingMenu');
     await registerTokenTaggingMenu();
@@ -107,8 +108,43 @@ async function onOwlbearReady() {
     console.error('[MP] registerTokenTaggingMenu failed:', stringifyErr(err));
   }
 
+  // Scene-dependent work (getItems, render, onChange subscribe) waits for
+  // scene-ready. OBR.onReady fires when the iframe is mounted, but the actual
+  // scene metadata may not be loaded yet — getItems errors with
+  // MissingDataError until OBR.scene.isReady() returns true.
+  let sceneReady = false;
   try {
-    console.log('[MP] step: getItems');
+    sceneReady = await OBR.scene.isReady();
+  } catch (err) {
+    console.error('[MP] scene.isReady failed:', stringifyErr(err));
+  }
+  console.log(`[MP] scene.isReady() = ${sceneReady}`);
+  if (sceneReady) await initSceneState();
+
+  // Re-init on scene-switch / late scene-load.
+  try {
+    OBR.scene.onReadyChange(async (ready) => {
+      console.log(`[MP] scene.onReadyChange: ready=${ready}`);
+      if (ready) await initSceneState();
+    });
+  } catch (err) {
+    console.error('[MP] scene.onReadyChange subscribe failed:', stringifyErr(err));
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (unsubscribeItems) unsubscribeItems();
+  });
+}
+
+async function initSceneState() {
+  // Clean up any prior items subscription before re-subscribing (scene-switch path).
+  if (unsubscribeItems) {
+    try { unsubscribeItems(); } catch (_) {}
+    unsubscribeItems = null;
+  }
+
+  try {
+    console.log('[MP] step: getItems (scene ready)');
     state.items = await OBR.scene.items.getItems();
   } catch (err) {
     console.error('[MP] getItems failed:', stringifyErr(err));
@@ -132,14 +168,6 @@ async function onOwlbearReady() {
   // other extensions' namespaces (notably Stat Bubbles' HP shape) so we can
   // optionally read/write to them. Strip after Stat Bubbles integration ships.
   for (const it of tagged.slice(0, 3)) dumpItemMetadata(it);
-}
-
-function dumpItemMetadata(it) {
-  const ns = it?.metadata ? Object.keys(it.metadata) : [];
-  console.log(`[MP] tagged-meta ${it.name || it.id} namespaces: [${ns.join(', ')}]`);
-  for (const key of ns) {
-    console.log(`  ${key} =`, JSON.stringify(it.metadata[key]));
-  }
 
   try {
     renderAll();
@@ -155,10 +183,14 @@ function dumpItemMetadata(it) {
   } catch (err) {
     console.error('[MP] onChange subscribe failed:', stringifyErr(err));
   }
+}
 
-  window.addEventListener('beforeunload', () => {
-    if (unsubscribeItems) unsubscribeItems();
-  });
+function dumpItemMetadata(it) {
+  const ns = it?.metadata ? Object.keys(it.metadata) : [];
+  console.log(`[MP] tagged-meta ${it.name || it.id} namespaces: [${ns.join(', ')}]`);
+  for (const key of ns) {
+    console.log(`  ${key} =`, JSON.stringify(it.metadata[key]));
+  }
 }
 
 // ----- Token tagging context menu -----
