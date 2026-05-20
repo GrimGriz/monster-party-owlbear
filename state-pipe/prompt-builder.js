@@ -9,10 +9,10 @@
 
 import { CARDS, BY_SUIT, SUIT_BINDING } from './cards-by-target.js';
 
-export function buildVillainPrompt(state, history = []) {
+export function buildVillainPrompt(state, history = [], currentRound = {}) {
   return {
     system: buildSystemPrompt(),
-    messages: [{ role: 'user', content: buildUserTurn(state, history) }],
+    messages: [{ role: 'user', content: buildUserTurn(state, history, currentRound) }],
   };
 }
 
@@ -141,7 +141,7 @@ Constraints:
 - Output JSON only. No code fences. No commentary.`;
 }
 
-function buildUserTurn(state, history) {
+function buildUserTurn(state, history, currentRound = {}) {
   const lines = [];
   lines.push(`# ROUND ${state.round}`);
   lines.push('');
@@ -176,6 +176,20 @@ function buildUserTurn(state, history) {
     lines.push('');
   }
 
+  const heroPhaseBlock = formatCurrentHeroPhase(currentRound.heroPhase);
+  if (heroPhaseBlock) {
+    lines.push('## Hero turn this round (just happened — react to it)');
+    lines.push(heroPhaseBlock);
+    lines.push('');
+  }
+
+  const lackeyBlock = formatCurrentLackeyAttacks(currentRound.lackeyAttacks);
+  if (lackeyBlock) {
+    lines.push('## Your lackeys this round (already resolved before your chain)');
+    lines.push(lackeyBlock);
+    lines.push('');
+  }
+
   const exhausted = state.boss?.cardsExhausted || [];
   if (exhausted.length) {
     lines.push(`## Cards already played this fight (DO NOT REPEAT)`);
@@ -187,6 +201,35 @@ function buildUserTurn(state, history) {
   lines.push('Plan your 4-card chain. Pick one card from each of the four suits, choose the order, and write the rage-post that LARPs each card. The GM will tell you after the chain resolves which saves landed.');
 
   return lines.join('\n');
+}
+
+function formatCurrentHeroPhase(heroPhase) {
+  if (!heroPhase) return '';
+  const lines = [];
+  for (const action of heroPhase.pcActions || []) {
+    const tgt = action.target ? ` → ${action.target}` : '';
+    const note = action.note ? ` (${action.note})` : '';
+    lines.push(`- ${action.pc}: ${action.action}${tgt}${note}`);
+  }
+  for (const crystal of heroPhase.crystalsUsed || []) {
+    const note = crystal.note ? ` — ${crystal.note}` : '';
+    lines.push(`- Party used the **${crystal.color}** crystal${note}`);
+  }
+  for (const note of heroPhase.notes || []) {
+    lines.push(`- [GM] ${note}`);
+  }
+  return lines.length ? lines.join('\n') : '';
+}
+
+function formatCurrentLackeyAttacks(lackeyAttacks) {
+  if (!lackeyAttacks?.length) return '';
+  return lackeyAttacks.map((la) => {
+    const outcome = la.result === 'save' ? 'SAVED (half dmg)' :
+                    la.result === 'fail' ? 'FAILED (full dmg)' :
+                    la.result || 'declared';
+    const note = la.note ? ` (${la.note})` : '';
+    return `- ${la.lackey} (${la.suit}) → ${la.target}${la.cardName ? ` [${la.cardName}]` : ''}: ${outcome}${note}`;
+  }).join('\n');
 }
 
 function formatPartyBlock(party) {
@@ -235,6 +278,21 @@ function formatHistoryRound(round) {
     lines.push('Hero turn:');
     for (const action of round.heroActions) {
       lines.push(`  - ${action.pc}: ${action.action}${action.target ? ` → ${action.target}` : ''}${action.note ? ` (${action.note})` : ''}`);
+    }
+  }
+  if (round.crystalsUsed?.length) {
+    for (const crystal of round.crystalsUsed) {
+      const note = crystal.note ? ` — ${crystal.note}` : '';
+      lines.push(`  - Party used the ${crystal.color} crystal${note}`);
+    }
+  }
+  if (round.lackeyAttacks?.length) {
+    lines.push('Your lackeys:');
+    for (const la of round.lackeyAttacks) {
+      const outcome = la.result === 'save' ? 'SAVED (half dmg)' :
+                      la.result === 'fail' ? 'FAILED (full dmg)' :
+                      la.result || 'declared';
+      lines.push(`  - ${la.lackey} (${la.suit}) → ${la.target}${la.cardName ? ` [${la.cardName}]` : ''}: ${outcome}`);
     }
   }
   if (round.notes) lines.push(`  Notes: ${round.notes}`);

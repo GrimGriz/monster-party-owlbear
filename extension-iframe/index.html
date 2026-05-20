@@ -36,6 +36,86 @@
     .pc-name { font-weight: 600; }
     .pc-name.bubbled { color: #6bdcff; }
     .pc-name.stunned { color: #ff8866; }
+
+    /* Top toolbar — phase pill */
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .toolbar .pill { background: #1f1f2a; padding: 4px 12px; border-radius: 12px; font-size: 11px;
+                     text-transform: uppercase; letter-spacing: 0.5px; color: #8a8a9a; }
+    .toolbar .pill b { color: #e6b243; margin-left: 4px; }
+    .toolbar .pill.villain b { color: #ff8866; }
+    .toolbar .round-num { font-size: 11px; color: #8a8a9a; text-transform: uppercase; letter-spacing: 0.5px; }
+    .toolbar .spacer { flex: 1; }
+
+    /* Hero phase section */
+    .hero-pcs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media (max-width: 600px) { .hero-pcs { grid-template-columns: 1fr; } }
+    .hero-pc { background: #1f1f2a; border-left: 3px solid #5a3aff; padding: 8px 10px;
+               border-radius: 4px; }
+    .hero-pc.denny   { border-left-color: #d65a7c; }
+    .hero-pc.beholda { border-left-color: #a06bff; }
+    .hero-pc.rascal  { border-left-color: #d27a3a; }
+    .hero-pc.goose   { border-left-color: #5fc5b3; }
+    .hero-pc.dead    { opacity: 0.4; }
+    .hero-pc.stunned { opacity: 0.6; }
+    .hero-pc h4 { margin: 0 0 4px; font-size: 13px; display: flex; justify-content: space-between;
+                  align-items: center; }
+    .hero-pc .pc-stats { font-size: 11px; color: #8a8a9a; margin-bottom: 6px; }
+    .hero-pc .pc-stats .sp-dots { color: #e6b243; }
+    .hero-pc .pc-stats .sp-dots .spent { color: #3a2c52; }
+    .hero-pc .target-row { display: flex; gap: 4px; margin-bottom: 4px; align-items: center;
+                           font-size: 11px; }
+    .hero-pc .target-row label { font-size: 10px; color: #8a8a9a; margin: 0; flex: 0 0 auto; }
+    .hero-pc .target-row select { font-size: 11px; padding: 2px 4px; flex: 1; }
+    .hero-pc .actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .hero-pc .actions button { padding: 4px 8px; font-size: 11px; font-weight: 500;
+                               background: #2a1f3c; color: #e8e8ee; border: 1px solid #3a2c52; }
+    .hero-pc .actions button.special { background: #3a2858; border-color: #5a3aff; }
+    .hero-pc .actions button:hover:not(:disabled) { background: #3a2c52; }
+    .hero-pc .actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .hero-actions-log { font-size: 11px; background: #16161e; border-radius: 4px;
+                        padding: 6px 8px; margin-top: 8px; max-height: 140px; overflow-y: auto; }
+    .hero-actions-log .empty { color: #6a6a7a; font-style: italic; }
+    .hero-actions-log .entry { padding: 2px 0; border-bottom: 1px dotted #2a2a38;
+                               display: flex; gap: 6px; align-items: center; }
+    .hero-actions-log .entry:last-child { border-bottom: none; }
+    .hero-actions-log .entry .who { font-weight: 600; color: #e6b243; min-width: 60px; }
+    .hero-actions-log .entry .what { flex: 1; }
+    .hero-actions-log .entry button.x { background: transparent; color: #8a8a9a; border: none;
+                                        padding: 0 4px; font-size: 14px; cursor: pointer; }
+    .hero-actions-log .entry button.x:hover { color: #ff6b6b; }
+
+    /* Crystal strip */
+    .crystal-strip { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+    .crystal-strip .label { font-size: 10px; color: #6a6a7a; text-transform: uppercase;
+                            letter-spacing: 0.5px; margin-right: 4px; }
+    .crystal-slot { width: 32px; height: 32px; border-radius: 50%; border: 2px dashed #2a2a38;
+                    display: flex; align-items: center; justify-content: center; font-size: 10px;
+                    color: #4a4a5a; cursor: not-allowed; background: transparent;
+                    text-transform: uppercase; letter-spacing: 0.5px; }
+    .crystal-slot.available { cursor: pointer; border-style: solid; color: #e8e8ee; font-weight: 600; }
+    .crystal-slot.available.green  { background: #1a4030; border-color: #2a7a4a; }
+    .crystal-slot.available.yellow { background: #4a3a10; border-color: #e6b243; }
+    .crystal-slot.available.indigo { background: #2a1f5a; border-color: #6b5dff; }
+    .crystal-slot.available:hover { filter: brightness(1.2); }
+    .crystal-slot.used { opacity: 0.3; text-decoration: line-through; cursor: not-allowed; }
+
+    /* Lackey attack rows (villain phase) */
+    .lackey-attack-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 6px;
+                         align-items: center; padding: 6px 8px; background: #1f1f2a; border-radius: 4px;
+                         margin-bottom: 4px; font-size: 12px; }
+    .lackey-attack-row select { font-size: 11px; padding: 2px 4px; }
+    .lackey-attack-row button { padding: 4px 8px; font-size: 11px; }
+    .lackey-attack-row.resolved { opacity: 0.6; }
+
+    /* Phase-gating: dim sections that aren't active */
+    section.phase-gated.inactive { opacity: 0.55; }
+    section.phase-gated.inactive button { pointer-events: none; }
+
+    /* Enemy row helpers (mark-killed etc.) */
+    .enemy-row { display: flex; gap: 6px; align-items: center; }
+    .enemy-row button.tiny { padding: 1px 6px; font-size: 10px; background: transparent;
+                             color: #8a8a9a; border: 1px solid #2a2a38; }
+    .enemy-row button.tiny:hover { color: #ff6b6b; border-color: #ff6b6b; }
     .chain-card { background: #1a1226; border-left: 3px solid #5a3aff; padding: 10px 12px;
                   margin-bottom: 8px; border-radius: 0 4px 4px 0; }
     .chain-card.resolved-save { border-left-color: #2a7a4a; opacity: 0.75; }
@@ -58,6 +138,12 @@
 </head>
 <body>
   <h1>Villain Claude — GM Panel</h1>
+
+  <div class="toolbar">
+    <span class="round-num">Round <b id="toolbar-round">1</b></span>
+    <span class="spacer"></span>
+    <span id="phase-pill" class="pill">Phase: <b>Party</b></span>
+  </div>
 
   <section id="battle-state">
     <h2>Battle state</h2>
@@ -90,8 +176,25 @@
     </details>
   </section>
 
-  <section id="villain-turn">
+  <section id="hero-phase" class="phase-gated">
+    <h2>Hero phase</h2>
+    <div id="hero-pcs" class="hero-pcs"></div>
+    <div class="crystal-strip">
+      <span class="label">Crystals</span>
+      <div id="crystal-slot-green"  class="crystal-slot" data-color="Green">G</div>
+      <div id="crystal-slot-yellow" class="crystal-slot" data-color="Yellow">Y</div>
+      <div id="crystal-slot-indigo" class="crystal-slot" data-color="Indigo">I</div>
+    </div>
+    <div class="hero-actions-log" id="hero-actions-log"></div>
+    <div class="row" style="margin-top: 8px;">
+      <button id="end-hero-turn">End hero turn → villain attacks</button>
+      <button id="reset-hero-phase" class="ghost">Reset hero phase</button>
+    </div>
+  </section>
+
+  <section id="villain-turn" class="phase-gated">
     <h2>Villain chain (current round)</h2>
+    <div id="lackey-attacks-block" style="margin-bottom: 10px;"></div>
     <div class="row" style="margin-bottom: 8px;">
       <button id="generate-chain">Generate 4-card chain</button>
       <button id="clear-chain" class="ghost">Clear</button>

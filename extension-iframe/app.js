@@ -21,13 +21,58 @@ import {
 const $ = (id) => document.getElementById(id);
 
 const PC_ROSTER = ['Denny', 'Beholda', 'Rascal', 'Goose'];
+const CRYSTAL_COLORS = ['Green', 'Yellow', 'Indigo'];
 const STORAGE_KEYS = {
   apiKey: 'mp-villain.apiKey',
   model: 'mp-villain.model',
   overrides: 'mp-villain.gmOverrides',
   history: 'mp-villain.history',
   pendingChain: 'mp-villain.pendingChain',
+  currentRound: 'mp-villain.currentRound',
 };
+
+// Locked boss-fight specials per PC (mechanics-audit-2026-05-18 §2 / battle-info §2).
+// `target` controls how the action picks a target:
+//   'pick'    — uses the PC card's target dropdown selection
+//   'pick-pc' — uses the dropdown but expects a PC name (heals / share)
+//   'party'   — fixed to "Party", dropdown ignored
+//   'boss'    — fixed to "Algorithm" (boss), dropdown ignored
+//   'self'    — fixed to the PC themselves
+// `sideEffect` is dispatched in dispatchSideEffect() — taunt, bubble, fireball-trigger, etc.
+const PC_ACTIONS = {
+  Denny: [
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
+    { id: 'taunt',  label: 'Taunt',         isSpecial: true,  target: 'boss', sideEffect: 'taunt' },
+    { id: 'denim',  label: 'Denim Damage',  isSpecial: true,  target: 'pick' },
+  ],
+  Beholda: [
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
+    { id: 'vna',    label: 'VNA Bubble',    isSpecial: true,  target: 'party', sideEffect: 'bubble' },
+    { id: 'gaze',   label: 'Baleful Gaze',  isSpecial: true,  target: 'boss' },
+  ],
+  Rascal: [
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
+    { id: 'fire',   label: 'Range Fireball', isSpecial: true, target: 'pick', sideEffect: 'fireball' },
+    { id: 'share',  label: 'Dice-Share',    isSpecial: true,  target: 'pick-pc' },
+  ],
+  Goose: [
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
+    { id: 'group',  label: 'Group Heal',    isSpecial: true,  target: 'party' },
+    { id: 'single', label: 'Single Heal',   isSpecial: true,  target: 'pick-pc' },
+  ],
+};
+
+function emptyHeroPhase() {
+  return { pcActions: [], crystalsUsed: [], notes: [] };
+}
+
+function emptyCurrentRound() {
+  return {
+    phase: 'party',
+    heroPhase: emptyHeroPhase(),
+    lackeyAttacks: [],
+  };
+}
 
 const state = {
   inOwlbear: false,
@@ -35,6 +80,7 @@ const state = {
   overrides: loadOverrides(),
   history: loadHistory(),
   pendingChain: loadPendingChain(),
+  currentRound: loadCurrentRound(),
 };
 
 let unsubscribeItems = null;
@@ -64,7 +110,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-20-menu-collapse-r2';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase';
 
 main();
 
@@ -299,6 +345,15 @@ function autoDetectRoleFromItem(item) {
     return { role: 'lackey', suit: 'EXTRACTION', archetype: 'EXTRACTION lackey', alive: true, cardsExhausted: [] };
   }
 
+  // Crystals — three colors per battle-info §5. Match on color + "crystal"
+  // so a token labelled "Green Crystal" or "Yellow crystal" or "indigo-crystal"
+  // all land. Tagging makes the matching slot in the hero-phase strip clickable.
+  if (haystack.includes('crystal')) {
+    if (haystack.includes('green'))  return { role: 'crystal', color: 'Green', used: false };
+    if (haystack.includes('yellow')) return { role: 'crystal', color: 'Yellow', used: false };
+    if (haystack.includes('indigo')) return { role: 'crystal', color: 'Indigo', used: false };
+  }
+
   return null;
 }
 
@@ -426,6 +481,19 @@ function bindUi() {
     renderAll();
   });
 
+  $('end-hero-turn').addEventListener('click', endHeroTurn);
+  $('reset-hero-phase').addEventListener('click', () => {
+    if (!confirm('Reset this round\'s hero phase (clears logged actions & crystals, returns phase to Party)?')) return;
+    state.currentRound = emptyCurrentRound();
+    saveCurrentRound();
+    renderAll();
+  });
+
+  for (const color of CRYSTAL_COLORS) {
+    const slot = document.getElementById(`crystal-slot-${color.toLowerCase()}`);
+    if (slot) slot.addEventListener('click', () => onCrystalSlotClick(color));
+  }
+
   $('generate-chain').addEventListener('click', generateChain);
   $('clear-chain').addEventListener('click', () => {
     state.pendingChain = null;
@@ -462,11 +530,480 @@ function currentBattleState() {
 }
 
 function renderAll() {
+  renderToolbar();
   renderState();
+  renderHeroPhase();
+  renderLackeyAttacksBlock();
   renderChain();
   renderHistory();
   renderRoundFinalizeVisibility();
+  applyPhaseGating();
 }
+
+function renderToolbar() {
+  const round = state.overrides.round ?? 1;
+  const roundEl = $('toolbar-round');
+  if (roundEl) roundEl.textContent = round;
+  const pill = $('phase-pill');
+  if (!pill) return;
+  const phase = state.currentRound.phase === 'villain' ? 'Villain' : 'Party';
+  pill.classList.toggle('villain', phase === 'Villain');
+  pill.innerHTML = `Phase: <b>${phase}</b>`;
+}
+
+function applyPhaseGating() {
+  const heroSec = $('hero-phase');
+  const villainSec = $('villain-turn');
+  if (!heroSec || !villainSec) return;
+  const isVillain = state.currentRound.phase === 'villain';
+  heroSec.classList.toggle('inactive', isVillain);
+  villainSec.classList.toggle('inactive', !isVillain);
+}
+
+// ----- Hero phase rendering -----
+
+function renderHeroPhase() {
+  const bs = currentBattleState();
+  const root = $('hero-pcs');
+  if (!root) return;
+  root.innerHTML = '';
+
+  const partyByName = Object.fromEntries((bs.party || []).map((pc) => [pc.name, pc]));
+  const aliveEnemies = enemyTargetOptions(bs);
+  const heroPhaseEnded = state.currentRound.phase === 'villain';
+
+  for (const pcName of PC_ROSTER) {
+    const pc = partyByName[pcName];
+    if (!pc) continue; // not tagged; skip
+    const card = document.createElement('div');
+    const dead = pc.hp <= 0;
+    const stunned = !!pc.stunned;
+    const classes = ['hero-pc', pcName.toLowerCase()];
+    if (dead) classes.push('dead');
+    else if (stunned) classes.push('stunned');
+    card.className = classes.join(' ');
+
+    const specials = pc.specialsRemaining ?? 0;
+    const spDots = Array.from({ length: 2 }, (_, i) =>
+      `<span class="${i < specials ? '' : 'spent'}">●</span>`,
+    ).join('');
+
+    const flagBits = [];
+    if (pc.bubbled) flagBits.push('BUBBLED');
+    if (stunned) flagBits.push('STUNNED');
+    if (dead) flagBits.push('DOWN');
+
+    const targetOptions = [
+      ...aliveEnemies.map((e) => `<option value="${escapeAttr(e.name)}">${escapeHtml(e.name)}</option>`),
+      `<option value="Party">Party</option>`,
+      ...PC_ROSTER
+        .filter((n) => partyByName[n])
+        .map((n) => `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`),
+    ].join('');
+
+    const actionsHtml = PC_ACTIONS[pcName].map((act) => {
+      const isSp = act.isSpecial;
+      const disabled = dead || stunned || heroPhaseEnded || (isSp && specials < 1);
+      const cls = `${isSp ? 'special' : ''}`;
+      return `<button class="${cls}" data-act="${act.id}" ${disabled ? 'disabled' : ''}>${escapeHtml(act.label)}${isSp ? ` (SP)` : ''}</button>`;
+    }).join('');
+
+    card.innerHTML = `
+      <h4>
+        <span>${escapeHtml(pcName)}</span>
+        <span class="pc-stats">${pc.hp}/${pc.maxHp} HP · AC ${pc.ac} · <span class="sp-dots">${spDots}</span></span>
+      </h4>
+      <div class="pc-stats">${flagBits.join(' · ') || '&nbsp;'}</div>
+      <div class="target-row">
+        <label>Target:</label>
+        <select data-target-pick>${targetOptions}</select>
+      </div>
+      <div class="actions">${actionsHtml}</div>
+    `;
+
+    card.querySelectorAll('button[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const actId = btn.getAttribute('data-act');
+        const action = PC_ACTIONS[pcName].find((a) => a.id === actId);
+        const targetSel = card.querySelector('select[data-target-pick]');
+        const pickedTarget = targetSel ? targetSel.value : '';
+        onPcActionClick(pcName, action, pickedTarget).catch((err) =>
+          log(`hero action failed: ${err?.message || err}`),
+        );
+      });
+    });
+
+    root.appendChild(card);
+  }
+
+  renderCrystalSlots(bs);
+  renderHeroActionsLog();
+}
+
+function enemyTargetOptions(bs) {
+  const opts = [];
+  if (bs.boss) opts.push({ name: 'Algorithm', kind: 'boss' });
+  for (const l of bs.lackeys || []) {
+    if (l.alive) opts.push({ name: l.archetype, kind: 'lackey', suit: l.suit });
+  }
+  return opts;
+}
+
+function renderCrystalSlots(bs) {
+  // Walk tagged crystal items; mark each color's slot as available / used / absent.
+  const tagged = (state.items || [])
+    .map((it) => ({ item: it, tag: it?.metadata?.[METADATA_NAMESPACE] }))
+    .filter((e) => e.tag?.role === 'crystal');
+  const byColor = {};
+  for (const { tag } of tagged) {
+    if (CRYSTAL_COLORS.includes(tag.color)) byColor[tag.color] = tag;
+  }
+  // Anything we've logged in this round counts as used too (in case the OBR write hasn't landed).
+  const usedThisRound = new Set((state.currentRound.heroPhase.crystalsUsed || []).map((c) => c.color));
+
+  for (const color of CRYSTAL_COLORS) {
+    const slot = document.getElementById(`crystal-slot-${color.toLowerCase()}`);
+    if (!slot) continue;
+    slot.className = 'crystal-slot';
+    slot.removeAttribute('title');
+    const tag = byColor[color];
+    if (!tag) {
+      slot.title = `No ${color} crystal in play — tag a token in OBR to activate this slot.`;
+      slot.textContent = color[0];
+      continue;
+    }
+    const used = tag.used || usedThisRound.has(color);
+    slot.classList.add(used ? 'used' : 'available', color.toLowerCase());
+    slot.title = used
+      ? `${color} crystal already used.`
+      : `Click to log: Party used the ${color} crystal.`;
+    slot.textContent = color[0];
+  }
+}
+
+function renderHeroActionsLog() {
+  const root = $('hero-actions-log');
+  if (!root) return;
+  root.innerHTML = '';
+  const actions = state.currentRound.heroPhase.pcActions || [];
+  const crystals = state.currentRound.heroPhase.crystalsUsed || [];
+  const notes = state.currentRound.heroPhase.notes || [];
+  if (!actions.length && !crystals.length && !notes.length) {
+    root.innerHTML = '<div class="empty">No hero actions logged yet this round.</div>';
+    return;
+  }
+  const entries = [];
+  actions.forEach((a, idx) => entries.push({ kind: 'action', idx, html:
+    `<span class="who">${escapeHtml(a.pc)}</span><span class="what">${escapeHtml(a.action)}${a.target ? ` → ${escapeHtml(a.target)}` : ''}${a.note ? ` (${escapeHtml(a.note)})` : ''}</span>` }));
+  crystals.forEach((c, idx) => entries.push({ kind: 'crystal', idx, html:
+    `<span class="who">Crystal</span><span class="what">${escapeHtml(c.color)} used${c.note ? ` — ${escapeHtml(c.note)}` : ''}</span>` }));
+  notes.forEach((n, idx) => entries.push({ kind: 'note', idx, html:
+    `<span class="who">GM</span><span class="what">${escapeHtml(n)}</span>` }));
+
+  for (const e of entries) {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    row.innerHTML = `${e.html}<button class="x" title="Remove entry">×</button>`;
+    row.querySelector('button.x').addEventListener('click', () => {
+      removeHeroPhaseEntry(e.kind, e.idx);
+    });
+    root.appendChild(row);
+  }
+}
+
+function removeHeroPhaseEntry(kind, idx) {
+  const hp = state.currentRound.heroPhase;
+  if (kind === 'action') hp.pcActions.splice(idx, 1);
+  else if (kind === 'crystal') hp.crystalsUsed.splice(idx, 1);
+  else if (kind === 'note') hp.notes.splice(idx, 1);
+  saveCurrentRound();
+  renderHeroPhase();
+}
+
+async function onPcActionClick(pcName, action, pickedTarget) {
+  if (!action) return;
+  // Resolve effective target.
+  let target;
+  switch (action.target) {
+    case 'boss':  target = 'Algorithm'; break;
+    case 'party': target = 'Party'; break;
+    case 'self':  target = pcName; break;
+    case 'pick':
+    case 'pick-pc':
+    default:      target = pickedTarget || ''; break;
+  }
+  if (!target) {
+    log(`[hero] ${pcName} ${action.label}: no target selected`);
+    return;
+  }
+
+  // Pre-action side-effects that may abort (Rascal fireball cuts the turn).
+  const sideEffectResult = await dispatchSideEffect(pcName, action, target);
+  if (sideEffectResult?.abort) return;
+
+  // Log the action.
+  state.currentRound.heroPhase.pcActions.push({
+    pc: pcName, action: action.label, target,
+    note: sideEffectResult?.note || '',
+  });
+  saveCurrentRound();
+
+  // Decrement Stat Bubbles temporary health for SPs (specials remaining).
+  if (action.isSpecial) {
+    try { await decrementSpecial(pcName); } catch (err) {
+      console.error('[MP] decrementSpecial:', stringifyErr(err));
+    }
+  }
+
+  // If the side effect forces a phase flip, do it last so the log entry above
+  // is already committed.
+  if (sideEffectResult?.flipToVillain) {
+    state.currentRound.phase = 'villain';
+    saveCurrentRound();
+  }
+
+  renderAll();
+}
+
+async function dispatchSideEffect(pcName, action, target) {
+  switch (action.sideEffect) {
+    case 'taunt': {
+      // Denny Taunt — set boss.tauntedTo='Denny' so next villain card targets her.
+      await setBossTauntedTo('Denny').catch((err) =>
+        log(`taunt write failed: ${err?.message || err}`),
+      );
+      return { note: 'next villain card MUST target Denny' };
+    }
+    case 'bubble': {
+      // Beholda VNA Bubble — all PCs bubbled for one round (AC 14 → 19).
+      await setAllPcsBubbled(true).catch((err) =>
+        log(`bubble write failed: ${err?.message || err}`),
+      );
+      return { note: 'party AC 19 this round' };
+    }
+    case 'fireball': {
+      // Range Fireball vs the Algorithm triggers: log [TRIGGER], record success
+      // count for villain's next-round extra-card calc, force phase to villain
+      // (other PCs' remaining actions are skipped — Rascal's special cut the turn).
+      if (target !== 'Algorithm') return null;
+      const raw = prompt(
+        'Range Fireball at the Algorithm — how many die-successes vs Algo?\n' +
+        '(Each success fuels +1 extra villain card next round.)',
+        '0',
+      );
+      if (raw == null) return { abort: true }; // cancelled
+      const successes = Math.max(0, parseInt(raw, 10) || 0);
+      state.currentRound.heroPhase.notes.push(
+        `[TRIGGER] Rascal fireballed the Algorithm: ${successes} die-successes — ` +
+        `Algorithm plays +${successes} extra cards next round. Hero phase cut short here.`,
+      );
+      await setBossRascalExtraCards(successes).catch((err) =>
+        log(`rascalExtraCards write failed: ${err?.message || err}`),
+      );
+      return { note: `${successes} successes → +${successes} villain cards next round`, flipToVillain: true };
+    }
+    default:
+      return null;
+  }
+}
+
+async function onCrystalSlotClick(color) {
+  // Validate the slot is actually clickable (avoid the "no token tagged" case).
+  const tagged = state.items.find((it) => {
+    const t = it?.metadata?.[METADATA_NAMESPACE];
+    return t?.role === 'crystal' && t?.color === color;
+  });
+  if (!tagged) {
+    log(`[crystal] ${color} not in play — tag a crystal token in OBR first.`);
+    return;
+  }
+  const tag = tagged.metadata[METADATA_NAMESPACE];
+  if (tag.used) {
+    log(`[crystal] ${color} already used.`);
+    return;
+  }
+  const already = state.currentRound.heroPhase.crystalsUsed.find((c) => c.color === color);
+  if (already) return;
+  const note = prompt(`Note for ${color} crystal use (optional — e.g. who got the heal, what the hivemind effect was):`, '');
+  state.currentRound.heroPhase.crystalsUsed.push({ color, note: note || '' });
+  saveCurrentRound();
+
+  // Mark the OBR tag as used so the slot greys out persistently across reloads.
+  try { await setCrystalUsed(color, true); } catch (err) {
+    console.error('[MP] setCrystalUsed:', stringifyErr(err));
+  }
+  renderHeroPhase();
+}
+
+async function endHeroTurn() {
+  state.currentRound.phase = 'villain';
+  saveCurrentRound();
+  renderAll();
+}
+
+// ----- Lackey attack rows (villain phase) -----
+
+function renderLackeyAttacksBlock() {
+  const root = $('lackey-attacks-block');
+  if (!root) return;
+  root.innerHTML = '';
+  if (state.currentRound.phase !== 'villain') return;
+  const bs = currentBattleState();
+  const living = (bs.lackeys || []).filter((l) => l.alive);
+  if (!living.length) return;
+
+  const wrap = document.createElement('div');
+  const heading = document.createElement('h2');
+  heading.textContent = 'Lackey attacks';
+  wrap.appendChild(heading);
+
+  for (const l of living) {
+    const idx = state.currentRound.lackeyAttacks.findIndex((la) => la.lackeyId === l.id);
+    const existing = idx >= 0 ? state.currentRound.lackeyAttacks[idx] : null;
+    const suitHero = (l.suit && l.suit in {EMOTION:1,CONTROL:1,ASPIRATION:1,EXTRACTION:1})
+      ? ({ EMOTION: 'Goose', CONTROL: 'Rascal', ASPIRATION: 'Denny', EXTRACTION: 'Beholda' })[l.suit]
+      : 'Goose';
+    const targetOptions = PC_ROSTER
+      .map((n) => `<option value="${escapeAttr(n)}" ${(existing?.target || suitHero) === n ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+      .join('');
+
+    const row = document.createElement('div');
+    row.className = 'lackey-attack-row' + (existing?.result ? ' resolved' : '');
+    row.innerHTML = `
+      <div><strong>${escapeHtml(l.archetype)}</strong> <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP)</span></div>
+      <select data-target>${targetOptions}</select>
+      <button class="saved" data-result="save">${existing?.result === 'save' ? '✓ Saved' : 'Save'}</button>
+      <button class="failed" data-result="fail">${existing?.result === 'fail' ? '✓ Failed' : 'Fail'}</button>
+    `;
+    row.querySelector('select[data-target]').addEventListener('change', (e) => {
+      upsertLackeyAttack(l, e.target.value, existing?.result || null);
+    });
+    row.querySelectorAll('button[data-result]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tgt = row.querySelector('select[data-target]').value;
+        upsertLackeyAttack(l, tgt, btn.getAttribute('data-result'));
+      });
+    });
+    wrap.appendChild(row);
+  }
+  root.appendChild(wrap);
+}
+
+function upsertLackeyAttack(lackey, target, result) {
+  const idx = state.currentRound.lackeyAttacks.findIndex((la) => la.lackeyId === lackey.id);
+  const entry = {
+    lackeyId: lackey.id,
+    lackey: lackey.archetype,
+    suit: lackey.suit,
+    target,
+    cardName: null,
+    result,
+  };
+  if (idx >= 0) state.currentRound.lackeyAttacks[idx] = entry;
+  else state.currentRound.lackeyAttacks.push(entry);
+  saveCurrentRound();
+  renderAll();
+}
+
+// ----- OBR write helpers (Batch B side-effects) -----
+
+async function decrementSpecial(pcName) {
+  if (!state.inOwlbear) return;
+  const item = state.items.find((it) => {
+    const tag = it?.metadata?.[METADATA_NAMESPACE];
+    return tag?.role === 'pc' && tag?.name === pcName;
+  });
+  if (!item) return;
+  await OBR.scene.items.updateItems([item.id], (drafts) => {
+    for (const draft of drafts) {
+      const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
+      if (sb && typeof sb['temporary health'] === 'number') {
+        sb['temporary health'] = Math.max(0, sb['temporary health'] - 1);
+        draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+      }
+    }
+  });
+}
+
+async function setBossTauntedTo(value) {
+  if (!state.inOwlbear) return;
+  const item = state.items.find((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss');
+  if (!item) return;
+  await OBR.scene.items.updateItems([item.id], (drafts) => {
+    for (const draft of drafts) {
+      const tag = draft.metadata?.[METADATA_NAMESPACE];
+      if (!tag || tag.role !== 'boss') continue;
+      tag.tauntedTo = value;
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  });
+}
+
+async function setBossRascalExtraCards(count) {
+  if (!state.inOwlbear) return;
+  const item = state.items.find((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss');
+  if (!item) return;
+  await OBR.scene.items.updateItems([item.id], (drafts) => {
+    for (const draft of drafts) {
+      const tag = draft.metadata?.[METADATA_NAMESPACE];
+      if (!tag || tag.role !== 'boss') continue;
+      tag.rascalExtraCards = count;
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  });
+}
+
+async function setAllPcsBubbled(value) {
+  if (!state.inOwlbear) return;
+  const pcItems = state.items.filter((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'pc');
+  const ids = pcItems.map((it) => it.id);
+  if (!ids.length) return;
+  await OBR.scene.items.updateItems(ids, (drafts) => {
+    for (const draft of drafts) {
+      const tag = draft.metadata?.[METADATA_NAMESPACE];
+      if (!tag || tag.role !== 'pc') continue;
+      tag.bubbled = !!value;
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  });
+}
+
+async function setCrystalUsed(color, used) {
+  if (!state.inOwlbear) return;
+  const item = state.items.find((it) => {
+    const t = it?.metadata?.[METADATA_NAMESPACE];
+    return t?.role === 'crystal' && t?.color === color;
+  });
+  if (!item) return;
+  await OBR.scene.items.updateItems([item.id], (drafts) => {
+    for (const draft of drafts) {
+      const tag = draft.metadata?.[METADATA_NAMESPACE];
+      if (!tag || tag.role !== 'crystal') continue;
+      tag.used = !!used;
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  });
+}
+
+async function setLackeyAlive(lackeyTagId, alive) {
+  if (!state.inOwlbear) return;
+  const item = findLackeyItemByTagId(lackeyTagId);
+  if (!item) return;
+  await OBR.scene.items.updateItems([item.id], (drafts) => {
+    for (const draft of drafts) {
+      const tag = draft.metadata?.[METADATA_NAMESPACE];
+      if (!tag || tag.role !== 'lackey') continue;
+      tag.alive = !!alive;
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  });
+}
+
+function escapeAttr(s) {
+  return (s || '').replace(/"/g, '&quot;').replace(/&/g, '&amp;');
+}
+
+// ----- State rendering -----
 
 function renderState() {
   const bs = currentBattleState();
@@ -518,9 +1055,21 @@ function renderState() {
   lackeyList.innerHTML = '';
   for (const l of bs.lackeys.filter((x) => x.alive)) {
     const row = document.createElement('div');
-    row.className = 'muted';
+    row.className = 'enemy-row muted';
     row.title = 'Right-click to remove from extension';
-    row.textContent = `▸ ${l.archetype} (${l.suit}, ${l.hp} HP)`;
+    const label = document.createElement('span');
+    label.style.flex = '1';
+    label.textContent = `▸ ${l.archetype} (${l.suit}, ${l.hp} HP)`;
+    row.appendChild(label);
+    const killBtn = document.createElement('button');
+    killBtn.className = 'tiny';
+    killBtn.textContent = 'Mark killed';
+    killBtn.title = 'Mark this lackey dead (writes alive=false to OBR metadata).';
+    killBtn.addEventListener('click', () => {
+      if (!confirm(`Mark ${l.archetype} as killed?`)) return;
+      setLackeyAlive(l.id, false).catch((err) => log(`mark-killed failed: ${err?.message || err}`));
+    });
+    row.appendChild(killBtn);
     attachRemoveContextMenu(row, () => {
       const item = findLackeyItemByTagId(l.id);
       return { itemId: item?.id, label: l.archetype };
@@ -668,7 +1217,7 @@ async function generateChain() {
 
   try {
     const bs = currentBattleState();
-    const { system, messages } = buildVillainPrompt(bs, state.history);
+    const { system, messages } = buildVillainPrompt(bs, state.history, state.currentRound);
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -790,7 +1339,8 @@ async function applyDamageToToken(card, result) {
 function endRound() {
   const chain = state.pendingChain;
   if (!chain) return;
-  const heroSummary = $('hero-summary').value.trim();
+  const heroSummaryInput = $('hero-summary');
+  const heroSummary = heroSummaryInput ? heroSummaryInput.value.trim() : '';
 
   const round = {
     round: chain.round,
@@ -801,7 +1351,10 @@ function endRound() {
     })),
     chainBrokenAt: chain.chain.find((c) => c.result === 'save')?.order ?? null,
     monologueSummoned: chain.chainCompleted ? '(GM-typed lackey)' : null,
-    heroActions: [],
+    heroActions: (state.currentRound.heroPhase.pcActions || []).slice(),
+    crystalsUsed: (state.currentRound.heroPhase.crystalsUsed || []).slice(),
+    heroNotes: (state.currentRound.heroPhase.notes || []).slice(),
+    lackeyAttacks: (state.currentRound.lackeyAttacks || []).slice(),
     heroSummary,
   };
 
@@ -813,13 +1366,21 @@ function endRound() {
     (err) => log(`exhausted update failed: ${err?.message || err}`),
   );
 
-  // Bump round + clear chain
+  // End-of-round cleanup: bubbles are one-round, clear them so next round
+  // starts unbubbled unless Beholda re-raises. Boss taunt also clears (a
+  // round's worth, per battle-info §2).
+  setAllPcsBubbled(false).catch((err) => log(`bubble clear failed: ${err?.message || err}`));
+  setBossTauntedTo(false).catch((err) => log(`taunt clear failed: ${err?.message || err}`));
+
+  // Bump round + clear chain + reset currentRound (phase → party for next round).
   state.overrides.round = (state.overrides.round || 1) + 1;
   $('ov-round').value = state.overrides.round;
   saveOverrides();
   state.pendingChain = null;
   savePendingChain();
-  $('hero-summary').value = '';
+  state.currentRound = emptyCurrentRound();
+  saveCurrentRound();
+  if (heroSummaryInput) heroSummaryInput.value = '';
   setChainStatus(`Round ${round.round} logged. On to round ${state.overrides.round}.`);
   renderAll();
 }
@@ -923,6 +1484,29 @@ function savePendingChain() {
   }
 }
 
+function loadCurrentRound() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.currentRound);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Defensive: ensure shape is intact if storage was written by an older build.
+      return {
+        phase: parsed.phase === 'villain' ? 'villain' : 'party',
+        heroPhase: {
+          pcActions: parsed.heroPhase?.pcActions || [],
+          crystalsUsed: parsed.heroPhase?.crystalsUsed || [],
+          notes: parsed.heroPhase?.notes || [],
+        },
+        lackeyAttacks: parsed.lackeyAttacks || [],
+      };
+    }
+  } catch (_) {}
+  return emptyCurrentRound();
+}
+function saveCurrentRound() {
+  localStorage.setItem(STORAGE_KEYS.currentRound, JSON.stringify(state.currentRound));
+}
+
 // ----- Utils -----
 
 function snapshotHp(bs) {
@@ -976,5 +1560,9 @@ function mockSceneItems() {
     { id: 'mock-lackey-control', type: 'IMAGE', name: 'Hasan-Piker-Bot',
       metadata: { [METADATA_NAMESPACE]: { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', alive: true, cardsExhausted: [] },
                   [STAT_BUBBLES_NAMESPACE]: sb(50, 0) } },
+    { id: 'mock-crystal-green',  type: 'IMAGE', name: 'Green Crystal',
+      metadata: { [METADATA_NAMESPACE]: { role: 'crystal', color: 'Green', used: false } } },
+    { id: 'mock-crystal-yellow', type: 'IMAGE', name: 'Yellow Crystal',
+      metadata: { [METADATA_NAMESPACE]: { role: 'crystal', color: 'Yellow', used: false } } },
   ];
 }
