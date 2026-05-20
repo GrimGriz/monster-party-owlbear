@@ -128,6 +128,17 @@ async function onOwlbearReady() {
     console.log('[MP] item sample:', JSON.stringify({ id: it.id, type: it.type, layer: it.layer, name: it.name, hasMeta: !!it?.metadata?.[METADATA_NAMESPACE] }));
   }
 
+  // Full metadata namespace dump for the first 3 tagged items. Used to identify
+  // other extensions' namespaces (notably Stat Bubbles' HP shape) so we can
+  // optionally read/write to them. Strip after Stat Bubbles integration ships.
+  for (const it of tagged.slice(0, 3)) {
+    const ns = it?.metadata ? Object.keys(it.metadata) : [];
+    console.log(`[MP] tagged-meta ${it.name || it.id} namespaces: [${ns.join(', ')}]`);
+    for (const key of ns) {
+      console.log(`  ${key} =`, JSON.stringify(it.metadata[key]));
+    }
+  }
+
   try {
     renderAll();
   } catch (err) {
@@ -520,6 +531,10 @@ async function generateChain() {
     state.pendingChain = {
       generatedAt: new Date().toISOString(),
       round: bs.round,
+      // Snapshot HP at the moment the villain is about to act, so future rounds
+      // can render this in history and the villain can infer per-round damage
+      // deltas without needing numeric annotations in hero-action log lines.
+      startHp: snapshotHp(bs),
       chain: parsed.chain.map((c) => ({ ...c, result: null, skipped: false })),
       monologueIfChainCompletes: parsed.monologueIfChainCompletes || '',
       strategicNote: parsed.strategicNote || '',
@@ -593,6 +608,7 @@ function endRound() {
 
   const round = {
     round: chain.round,
+    startHp: chain.startHp || null,
     chain: chain.chain.map((c) => ({
       order: c.order, suit: c.suit, cardName: c.cardName,
       targetHero: c.targetHero, result: c.result, skipped: !!c.skipped,
@@ -692,6 +708,14 @@ function savePendingChain() {
 }
 
 // ----- Utils -----
+
+function snapshotHp(bs) {
+  return {
+    party: Object.fromEntries((bs.party || []).map((pc) => [pc.name, { hp: pc.hp, maxHp: pc.maxHp }])),
+    boss: bs.boss ? { hp: bs.boss.hp } : null,
+    lackeys: (bs.lackeys || []).map((l) => ({ id: l.id, archetype: l.archetype, suit: l.suit, hp: l.hp, alive: l.alive })),
+  };
+}
 
 function escapeHtml(s) {
   return (s || '')

@@ -99,7 +99,7 @@ function strategicPriors() {
   return `# STRATEGIC PRIORS (ordered, follow in order)
 
 1. **If Denny's taunt is active on you, your ASPIRATION card resolves FIRST in the chain.** Pick a strong ASPIRATION card so the chain doesn't die on Denny's high DC (13).
-2. **Otherwise, lead with EXTRACTION at Beholda.** Your bubble-pop strategy is the only way to make your lackeys' regular attacks land. EXTRACTION is the chain-extender suit; landing a Beholda stun (DC 12 to save) is your highest-value play.
+2. **Otherwise, lead with EXTRACTION at Beholda.** Stunning Beholda either drops her active VNA Bubble (if up — restores party AC from 19 back to 14) OR prevents her from raising it on her next turn (if down). Either outcome opens the rest of the party to your lackeys' regular attacks. Check the "VNA Bubble" line in the party block to know which case applies, and frame your rage-post accordingly. EXTRACTION is the chain-extender suit; the Beholda stun (DC 12 to save) is your highest-value play.
 3. **After EXTRACTION, prioritize order by DC (high → low).** ASPIRATION (DC 13) before EMOTION (DC 10) — your chain survives longest by leading with the cards hardest to save.
 4. **If Goose is already stunned (no heal), let EMOTION card go later in the chain.** No reason to spend a low-DC card on a dead-action PC.
 5. **Reply-hook coherence matters narratively.** Your 4-card chain should feel like one post threading into the next. RAGE → CONFORM → AUTHORITY → SLEEP scans as "anger, ratio-confirm, expert-bait, scroll-soothe" — that's a real Twitter ecology. Stitch the chain so the rage-posts feel inevitable.
@@ -218,6 +218,9 @@ function formatLackeyBlock(lackeys) {
 
 function formatHistoryRound(round) {
   const lines = [`### Round ${round.round}`];
+  if (round.startHp) {
+    lines.push(formatStartHpLine(round.startHp));
+  }
   if (round.chain?.length) {
     lines.push('Your chain:');
     for (const entry of round.chain) {
@@ -236,6 +239,22 @@ function formatHistoryRound(round) {
   }
   if (round.notes) lines.push(`  Notes: ${round.notes}`);
   return lines.join('\n');
+}
+
+function formatStartHpLine(startHp) {
+  const parts = [];
+  const partyEntries = Object.entries(startHp.party || {});
+  if (partyEntries.length) {
+    parts.push(partyEntries.map(([name, s]) => `${name} ${s.hp}/${s.maxHp}`).join(', '));
+  }
+  if (startHp.boss && typeof startHp.boss.hp === 'number') {
+    parts.push(`You: ${startHp.boss.hp}`);
+  }
+  const aliveLackeys = (startHp.lackeys || []).filter((l) => l.alive);
+  if (aliveLackeys.length) {
+    parts.push(`Lackeys: ${aliveLackeys.map((l) => `${l.archetype} ${l.hp}`).join(', ')}`);
+  }
+  return parts.length ? `HP entering your turn — ${parts.join(' · ')}` : '';
 }
 
 export function parseVillainResponse(rawText) {
