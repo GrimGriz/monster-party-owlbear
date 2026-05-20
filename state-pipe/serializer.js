@@ -4,6 +4,17 @@
 // No side effects. The villain prompt builder consumes the output of this.
 
 export const METADATA_NAMESPACE = 'com.thislittlecorner.monster-party/combatant';
+// Lucas's Stat Bubbles extension. We read HP / max HP / specials-remaining
+// from this namespace as the canonical source; our own tag stays
+// identity-only. The keys have literal spaces in them — that's the shape
+// Stat Bubbles writes, not a typo.
+//   health           — current HP
+//   max health       — max HP
+//   temporary health — specials remaining (Griz's reuse)
+//   armor class      — level indicator (Griz's reuse) — IGNORED here; our
+//                      combat AC is hardcoded bubbled?19:14 per mechanics.
+//   hide             — Stat Bubbles' visibility toggle, do not touch
+export const STAT_BUBBLES_NAMESPACE = 'com.owlbear-rodeo-bubbles-extension/metadata';
 
 /**
  * @typedef {Object} PCState
@@ -15,7 +26,6 @@ export const METADATA_NAMESPACE = 'com.thislittlecorner.monster-party/combatant'
  * @property {boolean} stunned
  * @property {number} actionDiceAvailable
  * @property {number} specialsRemaining
- * @property {string[]} crystalsHeld
  */
 
 /**
@@ -58,30 +68,30 @@ export function serializeScene(obrItems, gmOverrides = {}) {
   const lackeys = [];
 
   for (const { item, tag } of tagged) {
+    const sb = item?.metadata?.[STAT_BUBBLES_NAMESPACE] || {};
     switch (tag.role) {
       case 'pc': {
         if (!PC_NAMES.has(tag.name)) break;
         const bubbled = !!tag.bubbled;
         party.push({
           name: tag.name,
-          hp: numOr(tag.hp, 0),
-          maxHp: numOr(tag.maxHp, 0),
-          ac: numOr(tag.ac, bubbled ? 19 : 14),
+          hp: numOr(sb.health, numOr(tag.hp, 0)),
+          maxHp: numOr(sb['max health'], numOr(tag.maxHp, 0)),
+          ac: bubbled ? 19 : 14,
           bubbled,
           stunned: !!tag.stunned,
           actionDiceAvailable: numOr(
             tag.actionDiceAvailable,
             tag.stunned ? 0 : 4,
           ),
-          specialsRemaining: numOr(tag.specialsRemaining, 2),
-          crystalsHeld: Array.isArray(tag.crystalsHeld) ? tag.crystalsHeld : [],
+          specialsRemaining: numOr(sb['temporary health'], numOr(tag.specialsRemaining, 2)),
         });
         break;
       }
       case 'boss': {
         boss = {
-          hp: numOr(tag.hp, 500),
-          ac: numOr(tag.ac, 14),
+          hp: numOr(sb.health, numOr(tag.hp, 500)),
+          ac: 14,
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted
             : [],
@@ -94,7 +104,7 @@ export function serializeScene(obrItems, gmOverrides = {}) {
           id: tag.id || item.id,
           suit: tag.suit,
           archetype: tag.archetype || 'unknown',
-          hp: numOr(tag.hp, 0),
+          hp: numOr(sb.health, numOr(tag.hp, 0)),
           alive: tag.alive !== false,
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted

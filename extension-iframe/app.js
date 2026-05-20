@@ -10,6 +10,7 @@ import OBR from 'https://cdn.jsdelivr.net/npm/@owlbear-rodeo/sdk@3.1.0/+esm';
 import {
   serializeScene,
   METADATA_NAMESPACE,
+  STAT_BUBBLES_NAMESPACE,
 } from '../state-pipe/serializer.js';
 import { SUIT_BINDING } from '../state-pipe/cards-by-target.js';
 import {
@@ -273,12 +274,13 @@ async function registerTokenTaggingMenu() {
 }
 
 function defaultPcTag(name) {
-  const hpByName = { Denny: 150, Beholda: 112, Rascal: 88, Goose: 81 };
+  // PC tag is identity + ephemeral combat flags only. HP / max HP / specials
+  // remaining come from Stat Bubbles' metadata namespace (see serializer).
+  // AC is hardcoded bubbled?19:14 in the serializer per locked mechanics.
   return {
     role: 'pc', name,
-    hp: hpByName[name], maxHp: hpByName[name], ac: 14,
     bubbled: false, stunned: false,
-    actionDiceAvailable: 4, specialsRemaining: 2, crystalsHeld: [],
+    actionDiceAvailable: 4,
   };
 }
 
@@ -636,11 +638,30 @@ async function applyDamageToToken(card, result) {
   const dmg = result === 'save' ? SUIT_BINDING[card.suit]?.halfDmg : SUIT_BINDING[card.suit]?.fullDmg;
   if (typeof dmg !== 'number') return;
 
-  await OBR.scene.items.updateItems(state.items.map((i) => i.id), (drafts) => {
+  // Find the target PC's item id up-front so we don't iterate the whole scene
+  // inside the updateItems callback.
+  const target = state.items.find((it) => {
+    const tag = it?.metadata?.[METADATA_NAMESPACE];
+    return tag?.role === 'pc' && tag?.name === card.targetHero;
+  });
+  if (!target) return;
+
+  await OBR.scene.items.updateItems([target.id], (drafts) => {
     for (const draft of drafts) {
       const tag = draft.metadata?.[METADATA_NAMESPACE];
       if (!tag || tag.role !== 'pc' || tag.name !== card.targetHero) continue;
-      tag.hp = Math.max(0, (tag.hp || 0) - dmg);
+
+      // Stat Bubbles is the canonical HP source — read/write to its namespace
+      // so its floating bubble updates live. Fall back to our tag.hp only if
+      // the token has no Stat Bubbles metadata yet (un-bubbled token).
+      const sb = draft.metadata[STAT_BUBBLES_NAMESPACE];
+      if (sb && typeof sb.health === 'number') {
+        sb.health = Math.max(0, sb.health - dmg);
+        draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+      } else {
+        tag.hp = Math.max(0, (tag.hp || 0) - dmg);
+      }
+
       if (result === 'fail') tag.stunned = true;
       draft.metadata[METADATA_NAMESPACE] = tag;
     }
@@ -777,20 +798,34 @@ function log(line) {
 // ----- Mock scene for standalone dev -----
 
 function mockSceneItems() {
+  // Mocks include Stat Bubbles metadata (health, max health, temporary health
+  // = specials remaining per Griz's reuse) so the standalone-dev render path
+  // exercises the same code as inside OBR.
+  const sb = (hp, specials = 2) => ({
+    health: hp, 'max health': hp, 'temporary health': specials,
+    'armor class': 4, hide: false,
+  });
   return [
     { id: 'mock-denny',   type: 'IMAGE', name: 'Denny',
-      metadata: { [METADATA_NAMESPACE]: defaultPcTag('Denny') } },
+      metadata: { [METADATA_NAMESPACE]: defaultPcTag('Denny'),
+                  [STAT_BUBBLES_NAMESPACE]: sb(150) } },
     { id: 'mock-beholda', type: 'IMAGE', name: 'Beholda',
-      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Beholda'), bubbled: true } } },
+      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Beholda'), bubbled: true },
+                  [STAT_BUBBLES_NAMESPACE]: sb(112) } },
     { id: 'mock-rascal',  type: 'IMAGE', name: 'Rascal',
-      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Rascal'),  bubbled: true } } },
+      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Rascal'),  bubbled: true },
+                  [STAT_BUBBLES_NAMESPACE]: sb(88) } },
     { id: 'mock-goose',   type: 'IMAGE', name: 'Goose',
-      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Goose'),   bubbled: true } } },
+      metadata: { [METADATA_NAMESPACE]: { ...defaultPcTag('Goose'),   bubbled: true },
+                  [STAT_BUBBLES_NAMESPACE]: sb(81) } },
     { id: 'mock-boss',    type: 'IMAGE', name: 'Algorithm',
-      metadata: { [METADATA_NAMESPACE]: { role: 'boss', hp: 500, ac: 14, cardsExhausted: [], tauntedTo: false } } },
+      metadata: { [METADATA_NAMESPACE]: { role: 'boss', cardsExhausted: [], tauntedTo: false },
+                  [STAT_BUBBLES_NAMESPACE]: sb(500, 0) } },
     { id: 'mock-lackey-emotion', type: 'IMAGE', name: 'Alex-Jones-Bot',
-      metadata: { [METADATA_NAMESPACE]: { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', hp: 50, alive: true, cardsExhausted: [] } } },
+      metadata: { [METADATA_NAMESPACE]: { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', alive: true, cardsExhausted: [] },
+                  [STAT_BUBBLES_NAMESPACE]: sb(50, 0) } },
     { id: 'mock-lackey-control', type: 'IMAGE', name: 'Hasan-Piker-Bot',
-      metadata: { [METADATA_NAMESPACE]: { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', hp: 50, alive: true, cardsExhausted: [] } } },
+      metadata: { [METADATA_NAMESPACE]: { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', alive: true, cardsExhausted: [] },
+                  [STAT_BUBBLES_NAMESPACE]: sb(50, 0) } },
   ];
 }
