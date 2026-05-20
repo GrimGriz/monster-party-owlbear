@@ -261,36 +261,41 @@ async function registerTokenTaggingMenu() {
   }
 }
 
-// Auto-detect role from the OBR item's display name (item.name = the token-
-// text shown on the board). Substring match, case-insensitive. Returns the
-// tag to write, or null if no rule fires (token name needs renaming OR the
-// panel-side picker row, which lands in Batch B).
-function autoDetectRoleFromName(itemName) {
-  if (!itemName) return null;
-  const n = itemName.toLowerCase();
+// Auto-detect role from BOTH the OBR item's asset name (item.name — the
+// uploaded filename / asset label) AND its visible text overlay
+// (item.text.plainText — what Griz edits via right-click → Edit Text).
+// Either matching is enough, so a Monk-asset token labelled "Denny" works,
+// AND a token already named "Piratebeholda" works. Substring match,
+// case-insensitive. Returns the tag to write, or null if no rule fires.
+function autoDetectRoleFromItem(item) {
+  const haystack = [
+    item?.name || '',
+    item?.text?.plainText || '',
+  ].join(' ').toLowerCase();
+  if (!haystack.trim()) return null;
 
   // PCs — substring lets "Piratebeholda" / "Monk-Denny" / etc. match.
-  if (n.includes('denny'))   return defaultPcTag('Denny');
-  if (n.includes('beholda')) return defaultPcTag('Beholda');
-  if (n.includes('rascal'))  return defaultPcTag('Rascal');
-  if (n.includes('goose'))   return defaultPcTag('Goose');
+  if (haystack.includes('denny'))   return defaultPcTag('Denny');
+  if (haystack.includes('beholda')) return defaultPcTag('Beholda');
+  if (haystack.includes('rascal'))  return defaultPcTag('Rascal');
+  if (haystack.includes('goose'))   return defaultPcTag('Goose');
 
   // Boss
-  if (n.includes('algorithm') || n.includes('villain') || n === 'boss') {
+  if (haystack.includes('algorithm') || haystack.includes('villain') || haystack.trim() === 'boss') {
     return { role: 'boss', cardsExhausted: [], tauntedTo: false };
   }
 
   // Lackeys — known archetypes first, then bare suit names.
-  if (n.includes('alex') && n.includes('jones')) {
+  if (haystack.includes('alex') && haystack.includes('jones')) {
     return { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', alive: true, cardsExhausted: [] };
   }
-  if (n.includes('hasan') && n.includes('piker')) {
+  if (haystack.includes('hasan') && haystack.includes('piker')) {
     return { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', alive: true, cardsExhausted: [] };
   }
-  if (n.includes('aspiration')) {
+  if (haystack.includes('aspiration')) {
     return { role: 'lackey', suit: 'ASPIRATION', archetype: 'ASPIRATION lackey', alive: true, cardsExhausted: [] };
   }
-  if (n.includes('extraction')) {
+  if (haystack.includes('extraction')) {
     return { role: 'lackey', suit: 'EXTRACTION', archetype: 'EXTRACTION lackey', alive: true, cardsExhausted: [] };
   }
 
@@ -303,16 +308,19 @@ async function handleAddClick(items) {
     return;
   }
   for (const item of items) {
-    const tag = autoDetectRoleFromName(item.name);
+    const assetName = item?.name || '';
+    const textName = item?.text?.plainText || '';
+    const tag = autoDetectRoleFromItem(item);
     if (!tag) {
       console.warn(
-        `[MP] mp-add: no role match for "${item.name}" (id=${item.id}). ` +
-        `Rename the token to include one of: Denny, Beholda, Rascal, Goose, ` +
-        `Algorithm, Alex-Jones, Hasan-Piker, ASPIRATION, EXTRACTION — then retry.`,
+        `[MP] mp-add: no role match for asset="${assetName}" text="${textName}" (id=${item.id}). ` +
+        `Edit the token text (right-click → Edit Text) to include one of: ` +
+        `Denny, Beholda, Rascal, Goose, Algorithm, Alex-Jones, Hasan-Piker, ` +
+        `ASPIRATION, EXTRACTION — then retry. (Asset name also works.)`,
       );
       continue;
     }
-    console.log(`[MP] mp-add: "${item.name}" → ${tag.role}:${tag.name || tag.archetype || 'boss'}`);
+    console.log(`[MP] mp-add: asset="${assetName}" text="${textName}" → ${tag.role}:${tag.name || tag.archetype || 'boss'}`);
     await writeTagToSelection([item], tag);
   }
 }
@@ -834,10 +842,40 @@ function copyHistoryToClipboard() {
     (r.chain || []).map((c) => `  ${c.order}. ${c.suit} ${c.cardName}→${c.targetHero}: ${c.skipped ? 'skipped' : c.result}`).join('\n') +
     (r.heroSummary ? `\nHeroes: ${r.heroSummary}` : '')
   ).join('\n\n');
-  navigator.clipboard.writeText(text).then(
-    () => setChainStatus('History copied to clipboard.'),
-    (err) => setChainStatus(`Copy failed: ${err.message}`, true),
+  copyTextToClipboard(text).then(
+    (method) => setChainStatus(`History copied (${method}).`),
+    (err) => setChainStatus(`Copy failed: ${err.message || err}`, true),
   );
+}
+
+// Clipboard write with fallback. OBR's iframe sandbox doesn't grant the
+// clipboard-write permission, so navigator.clipboard.writeText throws a
+// Permissions Policy violation. Falls back to a temporary textarea +
+// document.execCommand('copy'), which works under a user-initiated click
+// without the permission.
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return 'clipboard API';
+    } catch (_) {
+      // fall through to execCommand path
+    }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.setAttribute('readonly', '');
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    const ok = document.execCommand('copy');
+    if (!ok) throw new Error('execCommand returned false');
+    return 'execCommand fallback';
+  } finally {
+    document.body.removeChild(ta);
+  }
 }
 
 function setChainStatus(text, isError = false) {
