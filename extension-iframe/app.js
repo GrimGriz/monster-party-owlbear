@@ -197,80 +197,126 @@ function dumpItemMetadata(it) {
 // ----- Token tagging context menu -----
 
 async function registerTokenTaggingMenu() {
-  const entries = [
-    ...PC_ROSTER.map((name) => ({
-      id: `mp-tag-pc-${name.toLowerCase()}`,
-      label: `Monster Party: Tag as ${name}`,
-      tag: defaultPcTag(name),
-    })),
-    {
-      id: 'mp-tag-boss',
-      label: 'Monster Party: Tag as Boss (Algorithm)',
-      tag: { role: 'boss', hp: 500, ac: 14, cardsExhausted: [], tauntedTo: false },
-    },
-    {
-      id: 'mp-tag-lackey-aspiration',
-      label: 'Monster Party: Tag lackey (ASPIRATION)',
-      tag: { role: 'lackey', suit: 'ASPIRATION', archetype: 'ASPIRATION lackey', hp: 50, alive: true, cardsExhausted: [] },
-    },
-    {
-      id: 'mp-tag-lackey-extraction',
-      label: 'Monster Party: Tag lackey (EXTRACTION)',
-      tag: { role: 'lackey', suit: 'EXTRACTION', archetype: 'EXTRACTION lackey', hp: 50, alive: true, cardsExhausted: [] },
-    },
-    {
-      id: 'mp-tag-lackey-emotion',
-      label: 'Monster Party: Tag Alex-Jones-Bot (EMOTION)',
-      tag: { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', hp: 50, alive: true, cardsExhausted: [] },
-    },
-    {
-      id: 'mp-tag-lackey-control',
-      label: 'Monster Party: Tag Hasan-Piker-Bot (CONTROL)',
-      tag: { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', hp: 50, alive: true, cardsExhausted: [] },
-    },
-    {
-      id: 'mp-untag',
-      label: 'Monster Party: Clear tag',
-      tag: null,
-    },
-  ];
-
-  for (const entry of entries) {
-    try {
-      await OBR.contextMenu.create({
-        id: entry.id,
-        icons: [
-          {
-            icon: 'https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg',
-            label: entry.label,
-            // every: [{ layer: CHARACTER }] restricts the menu to actual character tokens.
-            // Stat-Bubbles overlays are on non-CHARACTER layers (PROP/ATTACHMENT/NOTE),
-            // so without this filter the right-click can land on a bubble and tag the
-            // wrong item — serializer then never finds a PC.
-            filter: {
-              roles: ['GM'],
-              every: [{ key: 'layer', value: 'CHARACTER' }],
-            },
+  // Single entry. Remove-from-extension lives on the panel rows (right-click
+  // a PC/boss/lackey row in the panel) — keeps the OBR right-click menu lean
+  // and puts the destructive action where the tagged items are visible.
+  try {
+    await OBR.contextMenu.create({
+      id: 'mp-add',
+      icons: [
+        {
+          icon: 'https://grimgriz.github.io/monster-party-owlbear/extension-iframe/action-icon.svg',
+          label: 'Monster Party: Add to extension',
+          // every: [{ layer: CHARACTER }] restricts the menu to actual character tokens.
+          // Stat-Bubbles overlays are on non-CHARACTER layers (PROP/ATTACHMENT/NOTE),
+          // so without this filter the right-click can land on a bubble and tag the
+          // wrong item — serializer then never finds a PC.
+          filter: {
+            roles: ['GM'],
+            every: [{ key: 'layer', value: 'CHARACTER' }],
           },
-        ],
-        onClick: (context) => {
-          const items = context.items || [];
-          // One-line diagnostic per click so we can see what OBR actually delivers.
-          // Logs item count, first item's type/layer, and the tag we're about to write.
-          const first = items[0];
-          console.log(
-            `[MP] ${entry.id} click → items=${items.length}` +
-              (first ? ` first.type=${first.type} first.layer=${first.layer} first.id=${first.id}` : ' (no items)') +
-              ` tag=${entry.tag ? entry.tag.role + ':' + (entry.tag.name || entry.tag.archetype || 'boss') : 'CLEAR'}`,
-          );
-          return writeTagToSelection(items, entry.tag);
         },
-      });
-    } catch (err) {
-      console.error(`[MP] contextMenu.create(${entry.id}) failed:`, stringifyErr(err));
-      log(`contextMenu.create(${entry.id}) failed: ${err?.message || err}`);
-    }
+      ],
+      onClick: (context) => handleAddClick(context.items || []),
+    });
+  } catch (err) {
+    console.error(`[MP] contextMenu.create(mp-add) failed:`, stringifyErr(err));
+    log(`contextMenu.create(mp-add) failed: ${err?.message || err}`);
   }
+}
+
+// Auto-detect role from the OBR item's display name (item.name = the token-
+// text shown on the board). Substring match, case-insensitive. Returns the
+// tag to write, or null if no rule fires (token name needs renaming OR the
+// panel-side picker row, which lands in Batch B).
+function autoDetectRoleFromName(itemName) {
+  if (!itemName) return null;
+  const n = itemName.toLowerCase();
+
+  // PCs — substring lets "Piratebeholda" / "Monk-Denny" / etc. match.
+  if (n.includes('denny'))   return defaultPcTag('Denny');
+  if (n.includes('beholda')) return defaultPcTag('Beholda');
+  if (n.includes('rascal'))  return defaultPcTag('Rascal');
+  if (n.includes('goose'))   return defaultPcTag('Goose');
+
+  // Boss
+  if (n.includes('algorithm') || n.includes('villain') || n === 'boss') {
+    return { role: 'boss', cardsExhausted: [], tauntedTo: false };
+  }
+
+  // Lackeys — known archetypes first, then bare suit names.
+  if (n.includes('alex') && n.includes('jones')) {
+    return { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', alive: true, cardsExhausted: [] };
+  }
+  if (n.includes('hasan') && n.includes('piker')) {
+    return { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', alive: true, cardsExhausted: [] };
+  }
+  if (n.includes('aspiration')) {
+    return { role: 'lackey', suit: 'ASPIRATION', archetype: 'ASPIRATION lackey', alive: true, cardsExhausted: [] };
+  }
+  if (n.includes('extraction')) {
+    return { role: 'lackey', suit: 'EXTRACTION', archetype: 'EXTRACTION lackey', alive: true, cardsExhausted: [] };
+  }
+
+  return null;
+}
+
+async function handleAddClick(items) {
+  if (!items.length) {
+    console.log('[MP] mp-add click → no items selected');
+    return;
+  }
+  for (const item of items) {
+    const tag = autoDetectRoleFromName(item.name);
+    if (!tag) {
+      console.warn(
+        `[MP] mp-add: no role match for "${item.name}" (id=${item.id}). ` +
+        `Rename the token to include one of: Denny, Beholda, Rascal, Goose, ` +
+        `Algorithm, Alex-Jones, Hasan-Piker, ASPIRATION, EXTRACTION — then retry.`,
+      );
+      continue;
+    }
+    console.log(`[MP] mp-add: "${item.name}" → ${tag.role}:${tag.name || tag.archetype || 'boss'}`);
+    await writeTagToSelection([item], tag);
+  }
+}
+
+// Remove handler triggered by right-click on a panel row. Confirms before
+// destroying the tag (since this drops the role assignment, not the token).
+async function removeTagFromItem(itemId, displayLabel) {
+  if (!itemId) return;
+  if (!confirm(`Remove ${displayLabel} from Monster Party extension?`)) return;
+  const item = state.items.find((it) => it.id === itemId);
+  if (!item) {
+    console.warn(`[MP] remove: item ${itemId} not in state.items — re-fetching scene…`);
+    try {
+      const fresh = await OBR.scene.items.getItems([itemId]);
+      if (fresh.length) await writeTagToSelection(fresh, null);
+    } catch (err) {
+      console.error('[MP] remove fallback fetch failed:', stringifyErr(err));
+    }
+    return;
+  }
+  console.log(`[MP] remove: "${item.name}" (id=${itemId})`);
+  await writeTagToSelection([item], null);
+}
+
+// Lookup helpers so panel rows can find their OBR item id.
+function findItemByPcName(name) {
+  return state.items.find((it) => {
+    const tag = it?.metadata?.[METADATA_NAMESPACE];
+    return tag?.role === 'pc' && tag?.name === name;
+  });
+}
+function findBossItem() {
+  return state.items.find((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss');
+}
+function findLackeyItemByTagId(tagId) {
+  return state.items.find((it) => {
+    const tag = it?.metadata?.[METADATA_NAMESPACE];
+    if (tag?.role !== 'lackey') return false;
+    return (tag.id || it.id) === tagId;
+  });
 }
 
 function defaultPcTag(name) {
@@ -384,7 +430,7 @@ function renderState() {
   const pcList = $('pc-list');
   pcList.innerHTML = '';
   if (!bs.party.length) {
-    pcList.innerHTML = '<div class="muted">No PC tokens tagged. Right-click a token in OBR → "Monster Party: Tag as …".</div>';
+    pcList.innerHTML = '<div class="muted">No PC tokens tagged. Right-click a token in OBR → "Monster Party: Add to extension".</div>';
   } else {
     for (const pc of bs.party) {
       const flags = [];
@@ -393,6 +439,7 @@ function renderState() {
       const className = `pc-name${pc.bubbled ? ' bubbled' : ''}${pc.stunned ? ' stunned' : ''}`;
       const row = document.createElement('div');
       row.className = 'pc-row';
+      row.title = 'Right-click to remove from extension';
       row.innerHTML = `
         <div class="${className}">${pc.name}</div>
         <div>${pc.hp}/${pc.maxHp}</div>
@@ -400,28 +447,56 @@ function renderState() {
         <div>${pc.actionDiceAvailable}d</div>
         <div class="muted">${flags.join(', ')}</div>
       `;
+      attachRemoveContextMenu(row, () => {
+        const item = findItemByPcName(pc.name);
+        return { itemId: item?.id, label: pc.name };
+      });
       pcList.appendChild(row);
     }
   }
 
   const bossLine = $('boss-line');
+  bossLine.innerHTML = '';
   if (bs.boss) {
-    bossLine.innerHTML = `<strong>Algorithm:</strong> ${bs.boss.hp} HP, AC ${bs.boss.ac}${bs.boss.tauntedTo ? ` · <span class="error">Taunted → ${bs.boss.tauntedTo}</span>` : ''}<span class="muted"> · exhausted: ${bs.boss.cardsExhausted.length}</span>`;
+    const span = document.createElement('span');
+    span.title = 'Right-click to remove from extension';
+    span.innerHTML = `<strong>Algorithm:</strong> ${bs.boss.hp} HP, AC ${bs.boss.ac}${bs.boss.tauntedTo ? ` · <span class="error">Taunted → ${bs.boss.tauntedTo}</span>` : ''}<span class="muted"> · exhausted: ${bs.boss.cardsExhausted.length}</span>`;
+    attachRemoveContextMenu(span, () => {
+      const item = findBossItem();
+      return { itemId: item?.id, label: 'Algorithm (boss)' };
+    });
+    bossLine.appendChild(span);
   } else {
     bossLine.innerHTML = '<span class="muted">No boss token tagged.</span>';
   }
 
   const lackeyList = $('lackey-list');
-  if (bs.lackeys.length) {
-    lackeyList.innerHTML = bs.lackeys
-      .filter((l) => l.alive)
-      .map((l) => `<div class="muted">▸ ${l.archetype} (${l.suit}, ${l.hp} HP)</div>`)
-      .join('');
-  } else {
-    lackeyList.innerHTML = '';
+  lackeyList.innerHTML = '';
+  for (const l of bs.lackeys.filter((x) => x.alive)) {
+    const row = document.createElement('div');
+    row.className = 'muted';
+    row.title = 'Right-click to remove from extension';
+    row.textContent = `▸ ${l.archetype} (${l.suit}, ${l.hp} HP)`;
+    attachRemoveContextMenu(row, () => {
+      const item = findLackeyItemByTagId(l.id);
+      return { itemId: item?.id, label: l.archetype };
+    });
+    lackeyList.appendChild(row);
   }
 
   $('state-display').textContent = JSON.stringify(bs, null, 2);
+}
+
+function attachRemoveContextMenu(el, lookup) {
+  el.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    const { itemId, label } = lookup();
+    if (!itemId) {
+      console.warn(`[MP] right-click remove: no OBR item found for "${label}"`);
+      return;
+    }
+    removeTagFromItem(itemId, label);
+  });
 }
 
 function renderChain() {
