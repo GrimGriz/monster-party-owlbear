@@ -61,9 +61,15 @@ window.addEventListener('unhandledrejection', (e) => {
   console.error('[MP] unhandledrejection', stringifyErr(e.reason));
 });
 
+// Build tag — log at boot so we can verify the right bundle loaded inside
+// OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
+// OBR's outer page without busting the iframe's cache).
+const BUILD_TAG = '2026-05-20-menu-collapse-r2';
+
 main();
 
 async function main() {
+  console.log(`[MP] app.js bundle: ${BUILD_TAG} (loaded ${new Date().toISOString()})`);
   hydrateSettings();
   hydrateOverridesUi();
   bindUi();
@@ -196,7 +202,37 @@ function dumpItemMetadata(it) {
 
 // ----- Token tagging context menu -----
 
+// Menu ids registered by prior builds of this extension. OBR persists menu
+// registrations in session state across iframe reloads, so removing entries
+// from our code alone leaves the old ones lingering in the right-click menu.
+// Explicitly unregister them before creating the new single-entry menu.
+const OLD_MENU_IDS = [
+  'mp-tag-pc-denny',
+  'mp-tag-pc-beholda',
+  'mp-tag-pc-rascal',
+  'mp-tag-pc-goose',
+  'mp-tag-boss',
+  'mp-tag-lackey-aspiration',
+  'mp-tag-lackey-extraction',
+  'mp-tag-lackey-emotion',
+  'mp-tag-lackey-control',
+  'mp-untag',
+  'mp-remove',
+];
+
 async function registerTokenTaggingMenu() {
+  // Tear down any context-menu items persisted by older builds before we
+  // register the current set. Errors per-id are non-fatal — the id may not
+  // exist on a fresh install.
+  for (const oldId of OLD_MENU_IDS) {
+    try {
+      await OBR.contextMenu.remove(oldId);
+      console.log(`[MP] removed stale menu id: ${oldId}`);
+    } catch (_) {
+      // Not registered (fresh install or already cleaned) — fine.
+    }
+  }
+
   // Single entry. Remove-from-extension lives on the panel rows (right-click
   // a PC/boss/lackey row in the panel) — keeps the OBR right-click menu lean
   // and puts the destructive action where the tagged items are visible.
