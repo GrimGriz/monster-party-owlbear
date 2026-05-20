@@ -131,12 +131,14 @@ async function onOwlbearReady() {
   // Full metadata namespace dump for the first 3 tagged items. Used to identify
   // other extensions' namespaces (notably Stat Bubbles' HP shape) so we can
   // optionally read/write to them. Strip after Stat Bubbles integration ships.
-  for (const it of tagged.slice(0, 3)) {
-    const ns = it?.metadata ? Object.keys(it.metadata) : [];
-    console.log(`[MP] tagged-meta ${it.name || it.id} namespaces: [${ns.join(', ')}]`);
-    for (const key of ns) {
-      console.log(`  ${key} =`, JSON.stringify(it.metadata[key]));
-    }
+  for (const it of tagged.slice(0, 3)) dumpItemMetadata(it);
+}
+
+function dumpItemMetadata(it) {
+  const ns = it?.metadata ? Object.keys(it.metadata) : [];
+  console.log(`[MP] tagged-meta ${it.name || it.id} namespaces: [${ns.join(', ')}]`);
+  for (const key of ns) {
+    console.log(`  ${key} =`, JSON.stringify(it.metadata[key]));
   }
 
   try {
@@ -260,6 +262,18 @@ async function writeTagToSelection(items, tag) {
       }
     }
   });
+
+  // Post-tag diagnostic: re-fetch the touched items and dump their full
+  // metadata (all namespaces). This is how we identify other extensions'
+  // namespaces — notably Stat Bubbles — for the optional HP read/write
+  // integration. Fires reliably even when init's getItems lost the
+  // MissingDataError race.
+  try {
+    const fresh = await OBR.scene.items.getItems(ids);
+    for (const it of fresh) dumpItemMetadata(it);
+  } catch (err) {
+    console.error('[MP] post-tag dump failed:', stringifyErr(err));
+  }
 }
 
 // ----- UI binding -----
