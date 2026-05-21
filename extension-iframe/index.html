@@ -79,10 +79,20 @@
                                display: flex; gap: 6px; align-items: center; }
     .hero-actions-log .entry:last-child { border-bottom: none; }
     .hero-actions-log .entry .who { font-weight: 600; color: #e6b243; min-width: 60px; }
-    .hero-actions-log .entry .what { flex: 1; }
+    .hero-actions-log .entry .what { flex: 1; min-width: 0; }
     .hero-actions-log .entry button.x { background: transparent; color: #8a8a9a; border: none;
                                         padding: 0 4px; font-size: 14px; cursor: pointer; }
     .hero-actions-log .entry button.x:hover { color: #ff6b6b; }
+    .success-counter { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
+                       font-variant-numeric: tabular-nums; }
+    .success-counter button.step { padding: 0 6px; background: #2a1f3c; color: #e8e8ee;
+                                   border: 1px solid #3a2c52; border-radius: 3px;
+                                   font-size: 12px; line-height: 16px; cursor: pointer; }
+    .success-counter button.step:hover { background: #3a2c52; }
+    .success-counter .count { display: inline-block; min-width: 16px; text-align: center;
+                              color: #e6b243; font-weight: 600; font-size: 12px; }
+    .success-counter .applied { color: #8a8a9a; font-size: 10px; margin-left: 4px; min-width: 44px;
+                                text-align: right; }
 
     /* Crystal strip */
     .crystal-strip { display: flex; gap: 6px; margin-top: 8px; align-items: center; }

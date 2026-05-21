@@ -39,26 +39,45 @@ const STORAGE_KEYS = {
 //   'boss'    — fixed to "Algorithm" (boss), dropdown ignored
 //   'self'    — fixed to the PC themselves
 // `sideEffect` is dispatched in dispatchSideEffect() — taunt, bubble, fireball-trigger, etc.
+//
+// `formula` is the L4 damage/heal computation per battle-info §2:
+//   amount = base + mul * successes  (base applied only iff successes >= 1)
+//   kind = 'damage' subtracts HP; 'heal' adds HP.
+//   partyWide = true → apply to every alive PC (Goose Group Heal).
+// Actions with no formula (VNA Bubble, Dice-Share, Taunt's bonus targets)
+// are pure-effect logs; they don't write HP per success.
 const PC_ACTIONS = {
   Denny: [
-    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
-    { id: 'taunt',  label: 'Taunt',         isSpecial: true,  target: 'boss', sideEffect: 'taunt' },
-    { id: 'denim',  label: 'Denim Damage',  isSpecial: true,  target: 'pick' },
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
+      formula: { base: 0, mul: 10, kind: 'damage' } },
+    { id: 'taunt',  label: 'Taunt',         isSpecial: true,  target: 'boss', sideEffect: 'taunt',
+      formula: { base: 35, mul: 0, kind: 'damage' } },
+    { id: 'denim',  label: 'Denim Damage',  isSpecial: true,  target: 'pick',
+      formula: { base: 35, mul: 10, kind: 'damage' } },
   ],
   Beholda: [
-    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
+      formula: { base: 0, mul: 10, kind: 'damage' } },
     { id: 'vna',    label: 'VNA Bubble',    isSpecial: true,  target: 'party', sideEffect: 'bubble' },
-    { id: 'gaze',   label: 'Baleful Gaze',  isSpecial: true,  target: 'boss' },
+    // Baleful Gaze vs THIS boss inverts to damage: every -1 def becomes 10 dmg.
+    // L4 base = -4 def × 10 = 40 base dmg; +10 per success.
+    { id: 'gaze',   label: 'Baleful Gaze',  isSpecial: true,  target: 'boss',
+      formula: { base: 40, mul: 10, kind: 'damage' } },
   ],
   Rascal: [
-    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
-    { id: 'fire',   label: 'Range Fireball', isSpecial: true, target: 'pick', sideEffect: 'fireball' },
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
+      formula: { base: 0, mul: 10, kind: 'damage' } },
+    { id: 'fire',   label: 'Range Fireball', isSpecial: true, target: 'pick', sideEffect: 'fireball',
+      formula: { base: 30, mul: 10, kind: 'damage' } },
     { id: 'share',  label: 'Dice-Share',    isSpecial: true,  target: 'pick-pc' },
   ],
   Goose: [
-    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick' },
-    { id: 'group',  label: 'Group Heal',    isSpecial: true,  target: 'party' },
-    { id: 'single', label: 'Single Heal',   isSpecial: true,  target: 'pick-pc' },
+    { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
+      formula: { base: 0, mul: 10, kind: 'damage' } },
+    { id: 'group',  label: 'Group Heal',    isSpecial: true,  target: 'party',
+      formula: { base: 20, mul: 5, kind: 'heal', partyWide: true } },
+    { id: 'single', label: 'Single Heal',   isSpecial: true,  target: 'pick-pc',
+      formula: { base: 25, mul: 10, kind: 'heal' } },
   ],
 };
 
@@ -82,6 +101,10 @@ const state = {
   pendingChain: loadPendingChain(),
   currentRound: loadCurrentRound(),
 };
+
+// Expose for in-browser debugging. Read-only convention — mutating from the
+// console will not survive an onChange refresh in OBR mode.
+if (typeof window !== 'undefined') window._mp = { state };
 
 let unsubscribeItems = null;
 
@@ -110,7 +133,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r2';
 
 main();
 
@@ -692,32 +715,159 @@ function renderHeroActionsLog() {
     root.innerHTML = '<div class="empty">No hero actions logged yet this round.</div>';
     return;
   }
-  const entries = [];
-  actions.forEach((a, idx) => entries.push({ kind: 'action', idx, html:
-    `<span class="who">${escapeHtml(a.pc)}</span><span class="what">${escapeHtml(a.action)}${a.target ? ` → ${escapeHtml(a.target)}` : ''}${a.note ? ` (${escapeHtml(a.note)})` : ''}</span>` }));
-  crystals.forEach((c, idx) => entries.push({ kind: 'crystal', idx, html:
-    `<span class="who">Crystal</span><span class="what">${escapeHtml(c.color)} used${c.note ? ` — ${escapeHtml(c.note)}` : ''}</span>` }));
-  notes.forEach((n, idx) => entries.push({ kind: 'note', idx, html:
-    `<span class="who">GM</span><span class="what">${escapeHtml(n)}</span>` }));
 
-  for (const e of entries) {
+  // Render actions with success counter where the formula warrants one.
+  actions.forEach((a, idx) => {
     const row = document.createElement('div');
     row.className = 'entry';
-    row.innerHTML = `${e.html}<button class="x" title="Remove entry">×</button>`;
+    const formula = a.formula;
+    const targetTxt = a.target ? ` → ${escapeHtml(a.target)}` : '';
+    const noteTxt = a.note ? ` (${escapeHtml(a.note)})` : '';
+    const counterHtml = formula
+      ? `<span class="success-counter" data-idx="${idx}">
+           <button class="step" data-step="-1" title="Decrement successes">−</button>
+           <span class="count">${a.successes || 0}</span>
+           <button class="step" data-step="+1" title="Increment successes">+</button>
+           <span class="applied">${formatAppliedAmount(formula, a.appliedAmount || 0)}</span>
+         </span>`
+      : '';
+    row.innerHTML = `
+      <span class="who">${escapeHtml(a.pc)}</span>
+      <span class="what">${escapeHtml(a.action)}${targetTxt}${noteTxt}</span>
+      ${counterHtml}
+      <button class="x" title="Remove (refunds SP, reverses HP)">×</button>
+    `;
     row.querySelector('button.x').addEventListener('click', () => {
-      removeHeroPhaseEntry(e.kind, e.idx);
+      removeHeroPhaseEntry('action', idx);
+    });
+    row.querySelectorAll('button.step').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const step = parseInt(btn.getAttribute('data-step'), 10);
+        adjustActionSuccesses(idx, step).catch((err) =>
+          log(`adjust failed: ${err?.message || err}`),
+        );
+      });
     });
     root.appendChild(row);
+  });
+
+  crystals.forEach((c, idx) => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    row.innerHTML = `
+      <span class="who">Crystal</span>
+      <span class="what">${escapeHtml(c.color)} used${c.note ? ` — ${escapeHtml(c.note)}` : ''}</span>
+      <button class="x" title="Remove">×</button>
+    `;
+    row.querySelector('button.x').addEventListener('click', () => removeHeroPhaseEntry('crystal', idx));
+    root.appendChild(row);
+  });
+
+  notes.forEach((n, idx) => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    row.innerHTML = `
+      <span class="who">GM</span>
+      <span class="what">${escapeHtml(n)}</span>
+      <button class="x" title="Remove">×</button>
+    `;
+    row.querySelector('button.x').addEventListener('click', () => removeHeroPhaseEntry('note', idx));
+    root.appendChild(row);
+  });
+}
+
+function formatAppliedAmount(formula, amt) {
+  if (!amt) return '';
+  if (formula.partyWide) {
+    return `(${amt}/PC ${formula.kind})`;
+  }
+  return `(${amt} ${formula.kind})`;
+}
+
+async function adjustActionSuccesses(idx, delta) {
+  const entry = state.currentRound.heroPhase.pcActions[idx];
+  if (!entry) return;
+  const newSuccesses = Math.max(0, (entry.successes || 0) + delta);
+  if (newSuccesses === (entry.successes || 0)) return;
+  const newAmount = computeFormulaAmount(entry.formula, newSuccesses);
+  const oldAmount = entry.appliedAmount || 0;
+  const deltaAmount = newAmount - oldAmount;
+  // Update bookkeeping SYNC before awaiting the OBR write, otherwise rapid +
+  // clicks would all read the same oldAmount=0 baseline and over-apply.
+  entry.successes = newSuccesses;
+  entry.appliedAmount = newAmount;
+  saveCurrentRound();
+  renderAll();
+  if (deltaAmount !== 0 && entry.formula) {
+    await applyFormulaDelta(entry.target, entry.formula, deltaAmount);
+    // Re-render after the HP write lands (standalone mutates state.items in
+    // place; OBR mode will also trigger renderAll via onChange).
+    renderAll();
   }
 }
 
-function removeHeroPhaseEntry(kind, idx) {
+async function removeHeroPhaseEntry(kind, idx) {
   const hp = state.currentRound.heroPhase;
-  if (kind === 'action') hp.pcActions.splice(idx, 1);
-  else if (kind === 'crystal') hp.crystalsUsed.splice(idx, 1);
-  else if (kind === 'note') hp.notes.splice(idx, 1);
+  if (kind === 'action') {
+    const entry = hp.pcActions[idx];
+    if (!entry) return;
+    // 1. Reverse applied HP delta if any successes were counted.
+    if (entry.appliedAmount && entry.formula) {
+      try {
+        await applyFormulaDelta(entry.target, entry.formula, -entry.appliedAmount);
+      } catch (err) {
+        log(`HP reversal failed: ${err?.message || err}`);
+      }
+    }
+    // 2. Reverse OBR side effects (taunt / bubble). Fireball trigger is NOT
+    //    reversed automatically — phase has flipped, the success-count note
+    //    has been spoken, and unwinding that is more disruption than help.
+    //    The GM can Reset hero phase if a fireball was a genuine misclick.
+    try {
+      await reverseSideEffect(entry).catch(() => {});
+    } catch (_) {}
+    // 3. Refund SP if this was a special.
+    if (entry.isSpecial) {
+      try { await changeSpecial(entry.pc, +1); } catch (err) {
+        log(`SP refund failed: ${err?.message || err}`);
+      }
+    }
+    hp.pcActions.splice(idx, 1);
+  } else if (kind === 'crystal') {
+    const crystal = hp.crystalsUsed[idx];
+    hp.crystalsUsed.splice(idx, 1);
+    if (crystal?.color) {
+      try { await setCrystalUsed(crystal.color, false); } catch (err) {
+        log(`crystal un-use failed: ${err?.message || err}`);
+      }
+    }
+  } else if (kind === 'note') {
+    hp.notes.splice(idx, 1);
+  }
   saveCurrentRound();
-  renderHeroPhase();
+  renderAll();
+}
+
+async function reverseSideEffect(entry) {
+  if (!entry.sideEffect) return;
+  switch (entry.sideEffect) {
+    case 'taunt':
+      await setBossTauntedTo(false);
+      return;
+    case 'bubble':
+      // VNA Bubble is the only way to set bubble in v1, so reversing is safe.
+      await setAllPcsBubbled(false);
+      return;
+    case 'fireball':
+      // Don't auto-revert the trigger (phase + extra-cards + note). Leaving
+      // a breadcrumb in the GM-notes makes the manual recovery obvious.
+      state.currentRound.heroPhase.notes.push(
+        `[NOTE] Rascal fireball entry removed — phase flip & rascalExtraCards were NOT auto-reverted. Use Reset hero phase if needed.`,
+      );
+      return;
+    default:
+      return;
+  }
 }
 
 async function onPcActionClick(pcName, action, pickedTarget) {
@@ -741,17 +891,29 @@ async function onPcActionClick(pcName, action, pickedTarget) {
   const sideEffectResult = await dispatchSideEffect(pcName, action, target);
   if (sideEffectResult?.abort) return;
 
-  // Log the action.
+  // Log the action — bake in everything needed to reverse it later:
+  // formula (so we can compute applied HP per success), the original action
+  // id + sideEffect so removal can undo state writes, isSpecial so we know
+  // whether to refund SP.
   state.currentRound.heroPhase.pcActions.push({
-    pc: pcName, action: action.label, target,
+    pc: pcName,
+    action: action.label,
+    actionId: action.id,
+    target,
     note: sideEffectResult?.note || '',
+    successes: 0,
+    appliedAmount: 0,
+    formula: action.formula || null,
+    isSpecial: !!action.isSpecial,
+    sideEffect: action.sideEffect || null,
+    sideEffectExtra: sideEffectResult?.extra || null,
   });
   saveCurrentRound();
 
   // Decrement Stat Bubbles temporary health for SPs (specials remaining).
   if (action.isSpecial) {
-    try { await decrementSpecial(pcName); } catch (err) {
-      console.error('[MP] decrementSpecial:', stringifyErr(err));
+    try { await changeSpecial(pcName, -1); } catch (err) {
+      console.error('[MP] changeSpecial(-1):', stringifyErr(err));
     }
   }
 
@@ -782,13 +944,15 @@ async function dispatchSideEffect(pcName, action, target) {
       return { note: 'party AC 19 this round' };
     }
     case 'fireball': {
-      // Range Fireball vs the Algorithm triggers: log [TRIGGER], record success
-      // count for villain's next-round extra-card calc, force phase to villain
-      // (other PCs' remaining actions are skipped — Rascal's special cut the turn).
+      // Range Fireball vs the Algorithm: phase cuts to villain. Damage is
+      // applied via the success counter on the logged entry — GM clicks +
+      // to mark each fireball success. The number entered here also fuels
+      // the +N extra-villain-card forecast for next round (separate from
+      // the per-success damage application).
       if (target !== 'Algorithm') return null;
       const raw = prompt(
         'Range Fireball at the Algorithm — how many die-successes vs Algo?\n' +
-        '(Each success fuels +1 extra villain card next round.)',
+        '(Each success: +1 extra villain card next round AND drives the success counter on the logged action for damage application.)',
         '0',
       );
       if (raw == null) return { abort: true }; // cancelled
@@ -800,7 +964,11 @@ async function dispatchSideEffect(pcName, action, target) {
       await setBossRascalExtraCards(successes).catch((err) =>
         log(`rascalExtraCards write failed: ${err?.message || err}`),
       );
-      return { note: `${successes} successes → +${successes} villain cards next round`, flipToVillain: true };
+      return {
+        note: `${successes} successes → +${successes} villain cards next round`,
+        flipToVillain: true,
+        extra: { extraCards: successes, presetSuccesses: successes },
+      };
     }
     default:
       return null;
@@ -907,96 +1075,190 @@ function upsertLackeyAttack(lackey, target, result) {
 
 // ----- OBR write helpers (Batch B side-effects) -----
 
-async function decrementSpecial(pcName) {
-  if (!state.inOwlbear) return;
+// Specials remaining lives in Stat Bubbles' 'temporary health' field per
+// Griz's reuse. Capped at 2 base — Stat Bubbles itself has no max for this
+// field, but the boss-fight rule is 2 SPs/encounter so we clamp on the
+// way up.
+async function changeSpecial(pcName, delta) {
   const item = state.items.find((it) => {
     const tag = it?.metadata?.[METADATA_NAMESPACE];
     return tag?.role === 'pc' && tag?.name === pcName;
   });
   if (!item) return;
-  await OBR.scene.items.updateItems([item.id], (drafts) => {
-    for (const draft of drafts) {
-      const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
-      if (sb && typeof sb['temporary health'] === 'number') {
-        sb['temporary health'] = Math.max(0, sb['temporary health'] - 1);
-        draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+  if (state.inOwlbear) {
+    await OBR.scene.items.updateItems([item.id], (drafts) => {
+      for (const draft of drafts) {
+        const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
+        if (sb && typeof sb['temporary health'] === 'number') {
+          sb['temporary health'] = Math.max(0, Math.min(2, sb['temporary health'] + delta));
+          draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+        }
       }
+    });
+  } else {
+    const sb = item.metadata?.[STAT_BUBBLES_NAMESPACE];
+    if (sb && typeof sb['temporary health'] === 'number') {
+      sb['temporary health'] = Math.max(0, Math.min(2, sb['temporary health'] + delta));
     }
+  }
+}
+
+// HP write to a named target (PC name / "Algorithm" / lackey archetype).
+// Writes via Stat Bubbles' `health` field — that's the canonical HP source
+// per Wednesday's Batch C decision. Mock-aware so standalone-dev exercises
+// the same code.
+function findItemByDisplayName(name) {
+  if (!name) return null;
+  return state.items.find((it) => {
+    const tag = it?.metadata?.[METADATA_NAMESPACE];
+    if (!tag) return false;
+    if (tag.role === 'pc' && tag.name === name) return true;
+    if (tag.role === 'boss' && (name === 'Algorithm' || name === 'boss')) return true;
+    if (tag.role === 'lackey' && tag.archetype === name) return true;
+    return false;
   });
+}
+
+async function applyHpDelta(targetName, hpDelta) {
+  if (!hpDelta) return;
+  const item = findItemByDisplayName(targetName);
+  if (!item) {
+    log(`[hp] no item found for target "${targetName}"`);
+    return;
+  }
+  const writeDraft = (draft) => {
+    const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
+    const tag = draft.metadata?.[METADATA_NAMESPACE];
+    if (sb && typeof sb.health === 'number') {
+      const maxH = typeof sb['max health'] === 'number' ? sb['max health'] : sb.health;
+      sb.health = Math.max(0, Math.min(maxH, sb.health + hpDelta));
+      draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+    } else if (tag && typeof tag.hp === 'number') {
+      tag.hp = Math.max(0, tag.hp + hpDelta);
+      draft.metadata[METADATA_NAMESPACE] = tag;
+    }
+  };
+  if (state.inOwlbear) {
+    await OBR.scene.items.updateItems([item.id], (drafts) => {
+      for (const draft of drafts) writeDraft(draft);
+    });
+  } else {
+    writeDraft(item);
+  }
+}
+
+function computeFormulaAmount(formula, successes) {
+  if (!formula) return 0;
+  if (successes < 1) return 0;
+  return (formula.base || 0) + (formula.mul || 0) * successes;
+}
+
+// Apply a damage / heal delta from an action to its target(s). For
+// partyWide formulas (Group Heal), each alive PC gets the per-PC amount.
+// `deltaAmount` is the *change* to apply — for a counter that ticks from
+// 3 to 4 with a 10-per-success formula, the caller passes 10.
+async function applyFormulaDelta(targetName, formula, deltaAmount) {
+  if (!formula || !deltaAmount) return;
+  const sign = formula.kind === 'heal' ? +1 : -1;
+  if (formula.partyWide) {
+    const bs = currentBattleState();
+    const alive = (bs.party || []).filter((pc) => pc.hp > 0).map((pc) => pc.name);
+    for (const name of alive) {
+      await applyHpDelta(name, sign * deltaAmount);
+    }
+    return;
+  }
+  await applyHpDelta(targetName, sign * deltaAmount);
+}
+
+// Helper: walk matching items and mutate their tag — mock-aware so the
+// standalone preview reflects the same state changes that OBR mode writes.
+async function mutateTags(matcher, mutate) {
+  const items = state.items.filter(matcher);
+  if (!items.length) return;
+  if (state.inOwlbear) {
+    const ids = items.map((it) => it.id);
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        const tag = draft.metadata?.[METADATA_NAMESPACE];
+        if (!tag) continue;
+        mutate(tag);
+        draft.metadata[METADATA_NAMESPACE] = tag;
+      }
+    });
+  } else {
+    for (const it of items) {
+      const tag = it.metadata?.[METADATA_NAMESPACE];
+      if (!tag) continue;
+      mutate(tag);
+    }
+  }
 }
 
 async function setBossTauntedTo(value) {
-  if (!state.inOwlbear) return;
-  const item = state.items.find((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss');
-  if (!item) return;
-  await OBR.scene.items.updateItems([item.id], (drafts) => {
-    for (const draft of drafts) {
-      const tag = draft.metadata?.[METADATA_NAMESPACE];
-      if (!tag || tag.role !== 'boss') continue;
-      tag.tauntedTo = value;
-      draft.metadata[METADATA_NAMESPACE] = tag;
-    }
-  });
+  await mutateTags(
+    (it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss',
+    (tag) => { tag.tauntedTo = value; },
+  );
 }
 
 async function setBossRascalExtraCards(count) {
-  if (!state.inOwlbear) return;
-  const item = state.items.find((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss');
-  if (!item) return;
-  await OBR.scene.items.updateItems([item.id], (drafts) => {
-    for (const draft of drafts) {
-      const tag = draft.metadata?.[METADATA_NAMESPACE];
-      if (!tag || tag.role !== 'boss') continue;
-      tag.rascalExtraCards = count;
-      draft.metadata[METADATA_NAMESPACE] = tag;
-    }
-  });
+  await mutateTags(
+    (it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss',
+    (tag) => { tag.rascalExtraCards = count; },
+  );
 }
 
 async function setAllPcsBubbled(value) {
-  if (!state.inOwlbear) return;
-  const pcItems = state.items.filter((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'pc');
-  const ids = pcItems.map((it) => it.id);
-  if (!ids.length) return;
-  await OBR.scene.items.updateItems(ids, (drafts) => {
-    for (const draft of drafts) {
-      const tag = draft.metadata?.[METADATA_NAMESPACE];
-      if (!tag || tag.role !== 'pc') continue;
-      tag.bubbled = !!value;
-      draft.metadata[METADATA_NAMESPACE] = tag;
-    }
-  });
+  await mutateTags(
+    (it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'pc',
+    (tag) => { tag.bubbled = !!value; },
+  );
 }
 
 async function setCrystalUsed(color, used) {
-  if (!state.inOwlbear) return;
-  const item = state.items.find((it) => {
-    const t = it?.metadata?.[METADATA_NAMESPACE];
-    return t?.role === 'crystal' && t?.color === color;
-  });
-  if (!item) return;
-  await OBR.scene.items.updateItems([item.id], (drafts) => {
-    for (const draft of drafts) {
-      const tag = draft.metadata?.[METADATA_NAMESPACE];
-      if (!tag || tag.role !== 'crystal') continue;
-      tag.used = !!used;
+  await mutateTags(
+    (it) => {
+      const t = it?.metadata?.[METADATA_NAMESPACE];
+      return t?.role === 'crystal' && t?.color === color;
+    },
+    (tag) => { tag.used = !!used; },
+  );
+}
+
+async function ageStunsAtRoundEnd(currentRound) {
+  // Walk PC items, clear stunned where stunnedAt < currentRound (the stun's
+  // hero-phase visibility has already happened — it's spent).
+  const apply = (draft) => {
+    const tag = draft.metadata?.[METADATA_NAMESPACE];
+    if (!tag || tag.role !== 'pc') return;
+    if (tag.stunned && typeof tag.stunnedAt === 'number' && tag.stunnedAt < currentRound) {
+      tag.stunned = false;
+      delete tag.stunnedAt;
       draft.metadata[METADATA_NAMESPACE] = tag;
     }
-  });
+  };
+  const pcs = state.items.filter((it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'pc');
+  if (!pcs.length) return;
+  if (state.inOwlbear) {
+    const ids = pcs.map((it) => it.id);
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) apply(draft);
+    });
+  } else {
+    for (const it of pcs) apply(it);
+  }
 }
 
 async function setLackeyAlive(lackeyTagId, alive) {
-  if (!state.inOwlbear) return;
-  const item = findLackeyItemByTagId(lackeyTagId);
-  if (!item) return;
-  await OBR.scene.items.updateItems([item.id], (drafts) => {
-    for (const draft of drafts) {
-      const tag = draft.metadata?.[METADATA_NAMESPACE];
-      if (!tag || tag.role !== 'lackey') continue;
-      tag.alive = !!alive;
-      draft.metadata[METADATA_NAMESPACE] = tag;
-    }
-  });
+  await mutateTags(
+    (it) => {
+      const t = it?.metadata?.[METADATA_NAMESPACE];
+      if (t?.role !== 'lackey') return false;
+      return (t.id || it.id) === lackeyTagId;
+    },
+    (tag) => { tag.alive = !!alive; },
+  );
 }
 
 function escapeAttr(s) {
@@ -1330,7 +1592,13 @@ async function applyDamageToToken(card, result) {
         tag.hp = Math.max(0, (tag.hp || 0) - dmg);
       }
 
-      if (result === 'fail') tag.stunned = true;
+      if (result === 'fail') {
+        tag.stunned = true;
+        // Tag the round-of-stun so endRound's age pass knows when to clear it.
+        // Stun lasts one round per battle-info §3: applied in round-N villain
+        // phase → visible in round N+1 hero phase → cleared at end of N+1.
+        tag.stunnedAt = state.pendingChain?.round ?? state.overrides.round;
+      }
       draft.metadata[METADATA_NAMESPACE] = tag;
     }
   });
@@ -1371,6 +1639,14 @@ function endRound() {
   // round's worth, per battle-info §2).
   setAllPcsBubbled(false).catch((err) => log(`bubble clear failed: ${err?.message || err}`));
   setBossTauntedTo(false).catch((err) => log(`taunt clear failed: ${err?.message || err}`));
+
+  // Age stuns: any PC whose stunnedAt < current round has already lost their
+  // hero phase action; clear so they can act next round. Per battle-info §3:
+  // stun = one action lost. Run BEFORE the round bump below so the
+  // comparison uses the just-ended round number.
+  ageStunsAtRoundEnd(state.overrides.round).catch((err) =>
+    log(`stun age failed: ${err?.message || err}`),
+  );
 
   // Bump round + clear chain + reset currentRound (phase → party for next round).
   state.overrides.round = (state.overrides.round || 1) + 1;
