@@ -250,7 +250,10 @@ function formatPartyBlock(party) {
 }
 
 function formatBossBlock(boss) {
-  const lines = [`**You (the Algorithm):** ${boss.hp} HP, AC ${boss.ac}`];
+  const acNote = boss.acReduction > 0
+    ? ` (base 14 reduced by ${boss.acReduction} from Beholda's Baleful Gaze — cumulative across rounds)`
+    : '';
+  const lines = [`**You (the Algorithm):** ${boss.hp} HP, AC ${boss.ac}${acNote}`];
   if (boss.tauntedTo) lines.push(`*Denny's taunt is ACTIVE on you — your next card MUST target Denny.*`);
   return lines.join('\n');
 }
@@ -258,9 +261,10 @@ function formatBossBlock(boss) {
 function formatLackeyBlock(lackeys) {
   const alive = lackeys.filter((l) => l.alive);
   if (!alive.length) return '**Lackeys:** (none alive)';
-  const rows = alive.map(
-    (l) => `- ${l.archetype} (${l.suit}, ${l.hp} HP) — exhausted: [${l.cardsExhausted.join(', ') || 'none'}]`,
-  );
+  const rows = alive.map((l) => {
+    const taunt = l.tauntedTo ? ` — TAUNTED to ${l.tauntedTo} (must target ${l.tauntedTo} on their next attack)` : '';
+    return `- ${l.archetype} (${l.suit}, ${l.hp} HP)${taunt} — exhausted: [${l.cardsExhausted.join(', ') || 'none'}]`;
+  });
   return `**Lackeys still up:**\n${rows.join('\n')}`;
 }
 

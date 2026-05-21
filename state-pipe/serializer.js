@@ -89,9 +89,14 @@ export function serializeScene(obrItems, gmOverrides = {}) {
         break;
       }
       case 'boss': {
+        const acReduction = numOr(tag.acReduction, 0);
         boss = {
           hp: numOr(sb.health, numOr(tag.hp, 500)),
-          ac: 14,
+          // Base AC 14 minus cumulative Baleful Gaze contributions. Floored
+          // at 0 by the setter; floored again here so a corrupted tag can't
+          // push AC negative.
+          ac: Math.max(0, 14 - Math.max(0, acReduction)),
+          acReduction: Math.max(0, acReduction),
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted
             : [],
@@ -113,6 +118,10 @@ export function serializeScene(obrItems, gmOverrides = {}) {
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted
             : [],
+          // tauntedTo: set by Denny's Taunt extension (each die-success
+          // adds one more enemy to the taunt). When 'Denny', this lackey's
+          // next attack MUST target her.
+          tauntedTo: tag.tauntedTo || false,
         });
         break;
       }

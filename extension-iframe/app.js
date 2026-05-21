@@ -50,18 +50,26 @@ const PC_ACTIONS = {
   Denny: [
     { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
       formula: { base: 0, mul: 10, kind: 'damage' } },
-    { id: 'taunt',  label: 'Taunt',         isSpecial: true,  target: 'boss', sideEffect: 'taunt',
-      formula: { base: 35, mul: 0, kind: 'damage' } },
+    // Taunt — pick any enemy (lackey or boss). The picked enemy gets
+    // tauntedTo='Denny'; each REAL die-success extends the taunt to one
+    // more enemy (proximity order if available; lackey-first → boss
+    // fallback otherwise). Damage always lands on Algorithm: cast = +20
+    // ("free success"), each real success = +20 more. presetSuccesses=1
+    // baseline so the row's ×1 reflects the free success.
+    { id: 'taunt',  label: 'Taunt',         isSpecial: true,  target: 'pick', sideEffect: 'taunt',
+      formula: { base: 0, mul: 20, kind: 'damage', forceTarget: 'Algorithm' } },
     { id: 'denim',  label: 'Denim Damage',  isSpecial: true,  target: 'pick',
-      formula: { base: 35, mul: 10, kind: 'damage' } },
+      formula: { base: 35, mul: 15, kind: 'damage' } },
   ],
   Beholda: [
     { id: 'basic',  label: 'Basic atk',     isSpecial: false, target: 'pick',
       formula: { base: 0, mul: 10, kind: 'damage' } },
     { id: 'vna',    label: 'VNA Bubble',    isSpecial: true,  target: 'party', sideEffect: 'bubble' },
-    // Baleful Gaze vs THIS boss inverts to damage: every -1 def becomes 10 dmg.
-    // L4 base = -4 def × 10 = 40 base dmg; +10 per success.
-    { id: 'gaze',   label: 'Baleful Gaze',  isSpecial: true,  target: 'boss',
+    // Baleful Gaze — base 40 dmg + 10/success vs Algorithm. Each success
+    // ALSO reduces boss AC by 1 (cumulative across rounds). The "every
+    // -1 def becomes 10 dmg" comment was the prior surprise mechanic;
+    // Griz's 5/21 spec stacks both: deal damage AND reduce defense.
+    { id: 'gaze',   label: 'Baleful Gaze',  isSpecial: true,  target: 'boss', sideEffect: 'gaze',
       formula: { base: 40, mul: 10, kind: 'damage' } },
   ],
   Rascal: [
@@ -77,7 +85,7 @@ const PC_ACTIONS = {
     { id: 'group',  label: 'Group Heal',    isSpecial: true,  target: 'party',
       formula: { base: 20, mul: 5, kind: 'heal', partyWide: true } },
     { id: 'single', label: 'Single Heal',   isSpecial: true,  target: 'pick-pc',
-      formula: { base: 25, mul: 10, kind: 'heal' } },
+      formula: { base: 25, mul: 15, kind: 'heal' } },
   ],
 };
 
@@ -133,7 +141,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r6';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r7';
 
 main();
 
@@ -811,6 +819,84 @@ async function adjustActionSuccesses(idx, delta) {
     // place; OBR mode will also trigger renderAll via onChange).
     renderAll();
   }
+  // Side-effect: fireball-at-Algorithm success ticks drive rascalExtraCards
+  // (the +N extra cards the villain plays next round). Surfaced to the
+  // villain via heroNotes [TRIGGER] entry + hero-action ×N line.
+  if (entry.actionId === 'fire') {
+    await syncRascalExtraCards().catch((err) =>
+      log(`rascalExtraCards sync failed: ${err?.message || err}`),
+    );
+  }
+  // Side-effect: Taunt extension — length of tauntExtras tracks successes.
+  // On +tick, add the next candidate enemy and tag tauntedTo='Denny'. On
+  // -tick, pop the last and clear its tauntedTo. Idempotent across the
+  // floor (successes=0 → empty list).
+  if (entry.sideEffect === 'taunt') {
+    await syncTauntExtras(entry, newSuccesses).catch((err) =>
+      log(`taunt extension sync failed: ${err?.message || err}`),
+    );
+  }
+  // Side-effect: Baleful Gaze AC reduction — every success on a gaze entry
+  // contributes -1 to boss AC. Re-sum across history + current so the
+  // metadata stays accurate after ticks.
+  if (entry.actionId === 'gaze') {
+    await syncBossAcReduction().catch((err) =>
+      log(`boss AC sync failed: ${err?.message || err}`),
+    );
+  }
+}
+
+// Bring entry.tauntExtras into sync with `targetLen` (= the entry's current
+// success count). Picks the next candidate enemy when extending — lackeys
+// first (alive only), then Algorithm. Already-tauntExtras members and any
+// dead lackey are excluded from the pool.
+async function syncTauntExtras(entry, targetLen) {
+  if (!entry.tauntExtras) entry.tauntExtras = [];
+  const extras = entry.tauntExtras;
+  // Extend.
+  while (extras.length < targetLen) {
+    const bs = currentBattleState();
+    const taken = new Set(extras);
+    const aliveLackeys = (bs.lackeys || []).filter((l) => l.alive).map((l) => l.archetype);
+    const candidates = [...aliveLackeys, 'Algorithm'].filter((n) => !taken.has(n));
+    if (!candidates.length) break; // no one left to taunt
+    const next = candidates[0];
+    extras.push(next);
+    await setEnemyTauntedTo(next, 'Denny');
+  }
+  // Contract.
+  while (extras.length > targetLen) {
+    const removed = extras.pop();
+    if (removed) await setEnemyTauntedTo(removed, false);
+  }
+  saveCurrentRound();
+}
+
+// Recompute rascalExtraCards from any current-round Range Fireball entries
+// hitting Algorithm. Called from adjustActionSuccesses (tick adds successes)
+// and from removeHeroPhaseEntry (× removes the entry → count drops).
+async function syncRascalExtraCards() {
+  const fireAtBoss = (state.currentRound.heroPhase.pcActions || [])
+    .filter((e) => e.actionId === 'fire' && e.target === 'Algorithm');
+  const count = fireAtBoss.reduce((max, e) => Math.max(max, e.successes || 0), 0);
+  await setBossRascalExtraCards(count);
+}
+
+// Single source of truth for boss.acReduction: sum gaze successes across
+// history (locked contributions) + currentRound (in-flight, tickable). Run on
+// every gaze success tick AND on × removal so the metadata stays in step
+// with the action log.
+async function syncBossAcReduction() {
+  let total = 0;
+  for (const round of state.history) {
+    for (const action of (round.heroActions || [])) {
+      if (action.actionId === 'gaze') total += (action.successes || 0);
+    }
+  }
+  for (const action of (state.currentRound.heroPhase.pcActions || [])) {
+    if (action.actionId === 'gaze') total += (action.successes || 0);
+  }
+  await setBossAcReduction(total);
 }
 
 async function removeHeroPhaseEntry(kind, idx) {
@@ -839,7 +925,20 @@ async function removeHeroPhaseEntry(kind, idx) {
         log(`SP refund failed: ${err?.message || err}`);
       }
     }
+    const wasGaze = entry.actionId === 'gaze';
     hp.pcActions.splice(idx, 1);
+    // Re-sync rascalExtraCards in case this was the (or one of the) fire-at-
+    // Algorithm entries driving the count.
+    await syncRascalExtraCards().catch((err) =>
+      log(`rascalExtraCards sync failed: ${err?.message || err}`),
+    );
+    // Re-sync boss AC reduction if a gaze entry was removed (its successes
+    // contribution should drop off).
+    if (wasGaze) {
+      await syncBossAcReduction().catch((err) =>
+        log(`boss AC sync failed: ${err?.message || err}`),
+      );
+    }
   } else if (kind === 'crystal') {
     const crystal = hp.crystalsUsed[idx];
     hp.crystalsUsed.splice(idx, 1);
@@ -858,18 +957,33 @@ async function removeHeroPhaseEntry(kind, idx) {
 async function reverseSideEffect(entry) {
   if (!entry.sideEffect) return;
   switch (entry.sideEffect) {
-    case 'taunt':
-      await setBossTauntedTo(false);
+    case 'taunt': {
+      // Clear tauntedTo on every enemy this cast extended to (primary +
+      // any successes-driven extensions). Falls back to clearing the
+      // boss-only taunt for legacy entries without a tauntExtras list.
+      const extras = entry.tauntExtras;
+      if (Array.isArray(extras) && extras.length) {
+        for (const name of extras) {
+          await setEnemyTauntedTo(name, false);
+        }
+      } else {
+        await setBossTauntedTo(false);
+      }
       return;
+    }
     case 'bubble':
       // VNA Bubble is the only way to set bubble in v1, so reversing is safe.
       await setAllPcsBubbled(false);
       return;
     case 'fireball':
-      // Don't auto-revert the trigger (phase + extra-cards + note). Leaving
-      // a breadcrumb in the GM-notes makes the manual recovery obvious.
+      // Interrupt-return model: no phase flip happened at cast, and the
+      // rascalExtraCards count is re-synced from remaining fire entries by
+      // the caller (removeHeroPhaseEntry → syncRascalExtraCards). The
+      // [TRIGGER] heroNotes entry stays as a breadcrumb of what happened
+      // mid-round — the GM-typed [NOTE] below confirms the entry's removal
+      // so the round's narrative reads honestly.
       state.currentRound.heroPhase.notes.push(
-        `[NOTE] Rascal fireball entry removed — phase flip & rascalExtraCards were NOT auto-reverted. Use Reset hero phase if needed.`,
+        `[NOTE] Rascal fireball entry removed — re-cast or use Reset hero phase if this was a misclick.`,
       );
       return;
     default:
@@ -915,6 +1029,12 @@ async function onPcActionClick(pcName, action, pickedTarget) {
     isSpecial: !!action.isSpecial,
     sideEffect: action.sideEffect || null,
     sideEffectExtra: sideEffectResult?.extra || null,
+    // Taunt-specific: list of enemies currently tauntedTo='Denny' from this
+    // cast. Length == successes. Per-tick adjustActionSuccesses keeps it in
+    // sync; reverseSideEffect on × removal clears them all.
+    tauntExtras: sideEffectResult?.extra?.tauntExtras
+      ? [...sideEffectResult.extra.tauntExtras]
+      : null,
   };
   state.currentRound.heroPhase.pcActions.push(primaryEntry);
   const primaryIdx = state.currentRound.heroPhase.pcActions.length - 1;
@@ -989,11 +1109,24 @@ async function syncActionAppliedAmount(idx) {
 async function dispatchSideEffect(pcName, action, target) {
   switch (action.sideEffect) {
     case 'taunt': {
-      // Denny Taunt — set boss.tauntedTo='Denny' so next villain card targets her.
-      await setBossTauntedTo('Denny').catch((err) =>
+      // Denny Taunt — primary picked-enemy gets tauntedTo='Denny' on cast.
+      // Each real die-success extends the taunt to one more enemy (lackey
+      // first, then boss — proximity-ordered when token positions are
+      // available). Damage always lands on Algorithm: cast = +20 ("free
+      // success"), each real success = +20 more. The extension list is
+      // persisted on the action entry as `tauntExtras` so removal can
+      // reverse all of them.
+      const primary = target;
+      await setEnemyTauntedTo(primary, 'Denny').catch((err) =>
         log(`taunt write failed: ${err?.message || err}`),
       );
-      return { note: 'next villain card MUST target Denny' };
+      return {
+        note: `tauntedTo Denny: ${primary} (+20 dmg algo — free success). Each die-success extends to one more enemy.`,
+        extra: {
+          presetSuccesses: 1, // free success — baseline 20 dmg to Algo
+          tauntExtras: [primary],
+        },
+      };
     }
     case 'bubble': {
       // Beholda VNA Bubble — all PCs bubbled for one round (AC 14 → 19).
@@ -1004,18 +1137,15 @@ async function dispatchSideEffect(pcName, action, target) {
     }
     case 'fireball': {
       // Range Fireball is ranged AoE — per battle-info §2: damage =
-      // (30 + 10/success) to all in AoE radius. The success counter on
-      // each logged entry drives per-target HP application.
-      const raw = prompt(
-        'Range Fireball — how many die-successes? (Drives damage on each target in the AoE.)',
-        '0',
-      );
-      if (raw == null) return { abort: true };
-      const successes = Math.max(0, parseInt(raw, 10) || 0);
-
-      // Prompt for the full AoE target list — the picked target plus any
-      // others caught in the radius. GM types comma-separated names. Blank
-      // input → just the primary target.
+      // (30 + 10/success) to all in AoE radius. Successes flow through the
+      // standard per-row ± counter (no upfront prompt — Griz needs to roll
+      // the dice AFTER clicking the button, not before).
+      //
+      // The boss-hit trigger logs a [TRIGGER] note + writes rascalExtraCards
+      // but does NOT cut the hero turn. Per the interrupt-return model: the
+      // algorithm reacts (GM resolves narratively this turn), then remaining
+      // unstunned PCs finish their hero phase, then End Hero Turn proceeds
+      // normally. The +N extra cards lands on next round's villain chain.
       const enemiesAvailable = enemyTargetOptions(currentBattleState()).map((e) => e.name);
       const aoeRaw = prompt(
         `Range Fireball AoE — list ALL targets in radius (comma-separated). Primary target "${target}" included automatically.\n\n` +
@@ -1026,24 +1156,26 @@ async function dispatchSideEffect(pcName, action, target) {
         .split(',').map((s) => s.trim()).filter(Boolean)
         .filter((n) => n !== target); // dedupe primary
 
-      // Boss-targeted fireball ALSO fuels the +N extra-card trigger.
+      // Boss-targeted fireball fuels the +N extra-card trigger. Successes
+      // start at 0 here; the GM ticks the row counter after rolling.
       let triggerNote = '';
-      if (target === 'Algorithm' || extraTargets.includes('Algorithm')) {
-        await setBossRascalExtraCards(successes).catch((err) =>
-          log(`rascalExtraCards write failed: ${err?.message || err}`),
-        );
+      const hitsBoss = target === 'Algorithm' || extraTargets.includes('Algorithm');
+      if (hitsBoss) {
+        // rascalExtraCards write happens lazily when GM ticks successes — see
+        // adjustActionSuccesses. For the initial 0-success cast we still log
+        // the trigger note so the villain Claude sees the interrupt in history.
         state.currentRound.heroPhase.notes.push(
-          `[TRIGGER] Rascal fireballed the Algorithm: ${successes} die-successes — ` +
-          `Algorithm plays +${successes} extra cards next round. Hero phase cut short here.`,
+          `[TRIGGER] Rascal fireballed the Algorithm — algo reacts (interrupt). ` +
+          `Hero phase continues for unstunned PCs. +N extra cards next round (N = die-successes on the cast).`,
         );
-        triggerNote = `→ +${successes} villain cards next round`;
+        triggerNote = `→ algo interrupts, +N cards next round`;
       }
 
       return {
-        note: `${successes} successes${triggerNote}`,
-        // Only force villain phase if the boss got hit (the trigger fires).
-        flipToVillain: target === 'Algorithm' || extraTargets.includes('Algorithm'),
-        extra: { extraTargets, presetSuccesses: successes },
+        note: `AoE${triggerNote}`,
+        // Interrupt-return model: do NOT flip phase. Hero phase continues.
+        flipToVillain: false,
+        extra: { extraTargets, presetSuccesses: 0 },
       };
     }
     default:
@@ -1134,6 +1266,10 @@ function renderLackeyAttacksBlock() {
     const row = document.createElement('div');
     row.className = 'lackey-attack-row' + (existing?.result ? ' resolved' : '');
 
+    const tauntFlag = l.tauntedTo
+      ? `<span class="error" style="font-size:10px; margin-left:6px;">TAUNTED → ${escapeHtml(l.tauntedTo)}</span>`
+      : '';
+
     if (outOfSp) {
       // Basic melee fallback per battle-info §6: 15 dmg when out of specials.
       const targetAppliedCls = existing?.mode === 'basic' ? ' resolved' : '';
@@ -1142,6 +1278,7 @@ function renderLackeyAttacksBlock() {
         <div>
           <strong>${escapeHtml(l.archetype)}</strong>
           <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, BASIC)</span>
+          ${tauntFlag}
         </div>
         <select data-target>${targetOptions}</select>
         <button class="failed" data-result="basic"${existing?.mode === 'basic' ? ' disabled' : ''}>
@@ -1159,14 +1296,20 @@ function renderLackeyAttacksBlock() {
         );
       });
     } else {
+      // SP > 0: lackey can use its special (Save / Fail) OR the basic atk.
+      // Griz wants Basic visible alongside Save/Fail so he doesn't have to
+      // exhaust SP to unlock basic — same shape as the hero phase cards.
+      const basicMarked = existing?.mode === 'basic';
       row.innerHTML = `
         <div>
           <strong>${escapeHtml(l.archetype)}</strong>
           <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, SP ${sp})</span>
+          ${tauntFlag}
         </div>
         <select data-target>${targetOptions}</select>
-        <button class="saved" data-result="save">${existing?.result === 'save' ? '✓ Saved' : 'Save'}</button>
-        <button class="failed" data-result="fail">${existing?.result === 'fail' ? '✓ Failed' : 'Fail'}</button>
+        <button class="saved" data-result="save">${existing?.result === 'save' && existing?.mode !== 'basic' ? '✓ Saved' : 'Save'}</button>
+        <button class="failed" data-result="fail">${existing?.result === 'fail' && existing?.mode !== 'basic' ? '✓ Failed' : 'Fail'}</button>
+        <button class="failed" data-result="basic">${basicMarked ? `✓ Basic ${existing.appliedHp || 15}` : 'Basic atk 15'}</button>
       `;
       row.querySelector('select[data-target]').addEventListener('change', (e) => {
         if (existing?.result) {
@@ -1175,8 +1318,10 @@ function renderLackeyAttacksBlock() {
       });
       row.querySelectorAll('button[data-result]').forEach((btn) => {
         btn.addEventListener('click', () => {
+          const result = btn.getAttribute('data-result');
           const tgt = row.querySelector('select[data-target]').value;
-          upsertLackeyAttack(l, tgt, btn.getAttribute('data-result'), 'special').catch((err) =>
+          const mode = result === 'basic' ? 'basic' : 'special';
+          upsertLackeyAttack(l, tgt, result, mode).catch((err) =>
             log(`lackey attack failed: ${err?.message || err}`),
           );
         });
@@ -1356,6 +1501,10 @@ function computeFormulaAmount(formula, successes) {
 async function applyFormulaDelta(targetName, formula, deltaAmount) {
   if (!formula || !deltaAmount) return;
   const sign = formula.kind === 'heal' ? +1 : -1;
+  // formula.forceTarget: redirect HP delta away from the action's nominal
+  // target (e.g. Denny's Taunt picks an enemy to *taunt* but damages the
+  // Algorithm regardless of who's picked).
+  const effectiveTarget = formula.forceTarget || targetName;
   if (formula.partyWide) {
     const bs = currentBattleState();
     const alive = (bs.party || []).filter((pc) => pc.hp > 0).map((pc) => pc.name);
@@ -1364,7 +1513,7 @@ async function applyFormulaDelta(targetName, formula, deltaAmount) {
     }
     return;
   }
-  await applyHpDelta(targetName, sign * deltaAmount);
+  await applyHpDelta(effectiveTarget, sign * deltaAmount);
 }
 
 // Helper: walk matching items and mutate their tag — mock-aware so the
@@ -1398,10 +1547,49 @@ async function setBossTauntedTo(value) {
   );
 }
 
+// Set tauntedTo on a specific enemy by display-name (handles both 'Algorithm'
+// and lackey archetypes). Used by Denny's Taunt to extend across multiple
+// enemies — primary on cast, +1 enemy per real die-success.
+async function setEnemyTauntedTo(enemyName, value) {
+  await mutateTags(
+    (it) => {
+      const t = it?.metadata?.[METADATA_NAMESPACE];
+      if (t?.role === 'boss' && enemyName === 'Algorithm') return true;
+      if (t?.role === 'lackey' && t?.archetype === enemyName) return true;
+      return false;
+    },
+    (tag) => { tag.tauntedTo = value; },
+  );
+}
+
+// Clear tauntedTo on every alive enemy (boss + lackeys). Used at end-of-round
+// cleanup so the per-cast taunt doesn't persist past the round it applies to.
+async function clearAllEnemyTaunts() {
+  await mutateTags(
+    (it) => {
+      const t = it?.metadata?.[METADATA_NAMESPACE];
+      return t?.role === 'boss' || t?.role === 'lackey';
+    },
+    (tag) => { tag.tauntedTo = false; },
+  );
+}
+
 async function setBossRascalExtraCards(count) {
   await mutateTags(
     (it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss',
     (tag) => { tag.rascalExtraCards = count; },
+  );
+}
+
+// Boss AC reduction from Baleful Gaze. Cumulative across rounds per Griz's
+// 5/21 spec — past gaze contributions stay locked (they're in history); each
+// new gaze success in the current round adds to the total. Serializer reads
+// this and derives ac = 14 - acReduction.
+async function setBossAcReduction(amount) {
+  const value = Math.max(0, Math.floor(amount));
+  await mutateTags(
+    (it) => it?.metadata?.[METADATA_NAMESPACE]?.role === 'boss',
+    (tag) => { tag.acReduction = value; },
   );
 }
 
@@ -1499,7 +1687,9 @@ function renderState() {
   if (bs.boss) {
     const span = document.createElement('span');
     span.title = 'Right-click to remove from extension';
-    span.innerHTML = `<strong>Algorithm:</strong> ${bs.boss.hp} HP, AC ${bs.boss.ac}${bs.boss.tauntedTo ? ` · <span class="error">Taunted → ${bs.boss.tauntedTo}</span>` : ''}<span class="muted"> · exhausted: ${bs.boss.cardsExhausted.length}</span>`;
+    const acReduction = bs.boss.acReduction || 0;
+    const acText = acReduction > 0 ? `AC ${bs.boss.ac} <span class="muted">(14 − ${acReduction} gaze)</span>` : `AC ${bs.boss.ac}`;
+    span.innerHTML = `<strong>Algorithm:</strong> ${bs.boss.hp} HP, ${acText}${bs.boss.tauntedTo ? ` · <span class="error">Taunted → ${bs.boss.tauntedTo}</span>` : ''}<span class="muted"> · exhausted: ${bs.boss.cardsExhausted.length}</span>`;
     attachRemoveContextMenu(span, () => {
       const item = findBossItem();
       return { itemId: item?.id, label: 'Algorithm (boss)' };
@@ -1867,9 +2057,11 @@ function endRound() {
 
   // End-of-round cleanup: bubbles are one-round, clear them so next round
   // starts unbubbled unless Beholda re-raises. Boss taunt also clears (a
-  // round's worth, per battle-info §2).
+  // round's worth, per battle-info §2). rascalExtraCards is the +N bonus
+  // for the round AFTER the cast — once that round ends, reset to 0.
   setAllPcsBubbled(false).catch((err) => log(`bubble clear failed: ${err?.message || err}`));
-  setBossTauntedTo(false).catch((err) => log(`taunt clear failed: ${err?.message || err}`));
+  clearAllEnemyTaunts().catch((err) => log(`taunt clear failed: ${err?.message || err}`));
+  setBossRascalExtraCards(0).catch((err) => log(`rascalExtraCards clear failed: ${err?.message || err}`));
 
   // Stun aging happens in endHeroTurn, not here — the stun-clear point is
   // "end of party turn" (right before villain phase starts again), not
