@@ -133,7 +133,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r2';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r3';
 
 main();
 
@@ -594,6 +594,11 @@ function renderHeroPhase() {
   const partyByName = Object.fromEntries((bs.party || []).map((pc) => [pc.name, pc]));
   const aliveEnemies = enemyTargetOptions(bs);
   const heroPhaseEnded = state.currentRound.phase === 'villain';
+  const actedSet = new Set(
+    (state.currentRound.heroPhase.pcActions || [])
+      .filter((a) => !a.action?.endsWith?.('(AoE)')) // AoE extras don't mark the PC as acted again
+      .map((a) => a.pc),
+  );
 
   for (const pcName of PC_ROSTER) {
     const pc = partyByName[pcName];
@@ -601,9 +606,11 @@ function renderHeroPhase() {
     const card = document.createElement('div');
     const dead = pc.hp <= 0;
     const stunned = !!pc.stunned;
+    const acted = actedSet.has(pcName);
     const classes = ['hero-pc', pcName.toLowerCase()];
     if (dead) classes.push('dead');
     else if (stunned) classes.push('stunned');
+    if (acted) classes.push('acted');
     card.className = classes.join(' ');
 
     const specials = pc.specialsRemaining ?? 0;
@@ -626,7 +633,7 @@ function renderHeroPhase() {
 
     const actionsHtml = PC_ACTIONS[pcName].map((act) => {
       const isSp = act.isSpecial;
-      const disabled = dead || stunned || heroPhaseEnded || (isSp && specials < 1);
+      const disabled = dead || stunned || heroPhaseEnded || acted || (isSp && specials < 1);
       const cls = `${isSp ? 'special' : ''}`;
       return `<button class="${cls}" data-act="${act.id}" ${disabled ? 'disabled' : ''}>${escapeHtml(act.label)}${isSp ? ` (SP)` : ''}</button>`;
     }).join('');
@@ -895,25 +902,61 @@ async function onPcActionClick(pcName, action, pickedTarget) {
   // formula (so we can compute applied HP per success), the original action
   // id + sideEffect so removal can undo state writes, isSpecial so we know
   // whether to refund SP.
-  state.currentRound.heroPhase.pcActions.push({
+  const presetSuccesses = sideEffectResult?.extra?.presetSuccesses ?? 0;
+  const primaryEntry = {
     pc: pcName,
     action: action.label,
     actionId: action.id,
     target,
     note: sideEffectResult?.note || '',
-    successes: 0,
+    successes: presetSuccesses,
     appliedAmount: 0,
     formula: action.formula || null,
     isSpecial: !!action.isSpecial,
     sideEffect: action.sideEffect || null,
     sideEffectExtra: sideEffectResult?.extra || null,
-  });
+  };
+  state.currentRound.heroPhase.pcActions.push(primaryEntry);
+  const primaryIdx = state.currentRound.heroPhase.pcActions.length - 1;
+
+  // AoE: log additional entries for each extra target. They share the same
+  // successes count and formula; SP is only consumed once (the primary).
+  const extraTargets = sideEffectResult?.extra?.extraTargets || [];
+  const extraIndices = [];
+  for (const extraTarget of extraTargets) {
+    state.currentRound.heroPhase.pcActions.push({
+      pc: pcName,
+      action: `${action.label} (AoE)`,
+      actionId: action.id,
+      target: extraTarget,
+      note: '',
+      successes: presetSuccesses,
+      appliedAmount: 0,
+      formula: action.formula || null,
+      isSpecial: false,
+      sideEffect: null,
+      sideEffectExtra: null,
+    });
+    extraIndices.push(state.currentRound.heroPhase.pcActions.length - 1);
+  }
   saveCurrentRound();
 
   // Decrement Stat Bubbles temporary health for SPs (specials remaining).
+  // AoE extras don't re-consume SP.
   if (action.isSpecial) {
     try { await changeSpecial(pcName, -1); } catch (err) {
       console.error('[MP] changeSpecial(-1):', stringifyErr(err));
+    }
+  }
+
+  // If preset successes > 0, auto-apply damage on every logged entry so the
+  // GM doesn't have to click + N times per AoE target. The success counter
+  // still works for adjustment.
+  if (presetSuccesses > 0 && action.formula) {
+    for (const idx of [primaryIdx, ...extraIndices]) {
+      await syncActionAppliedAmount(idx).catch((err) =>
+        log(`sync apply failed: ${err?.message || err}`),
+      );
     }
   }
 
@@ -925,6 +968,22 @@ async function onPcActionClick(pcName, action, pickedTarget) {
   }
 
   renderAll();
+}
+
+// Sync an action's appliedAmount to match its current successes count, applying
+// the delta to the target's HP. Used after pre-filling successes (e.g. AoE
+// auto-apply).
+async function syncActionAppliedAmount(idx) {
+  const entry = state.currentRound.heroPhase.pcActions[idx];
+  if (!entry || !entry.formula) return;
+  const targetAmount = computeFormulaAmount(entry.formula, entry.successes || 0);
+  const oldAmount = entry.appliedAmount || 0;
+  const deltaAmount = targetAmount - oldAmount;
+  if (deltaAmount !== 0) {
+    entry.appliedAmount = targetAmount;
+    saveCurrentRound();
+    await applyFormulaDelta(entry.target, entry.formula, deltaAmount);
+  }
 }
 
 async function dispatchSideEffect(pcName, action, target) {
@@ -944,30 +1003,47 @@ async function dispatchSideEffect(pcName, action, target) {
       return { note: 'party AC 19 this round' };
     }
     case 'fireball': {
-      // Range Fireball vs the Algorithm: phase cuts to villain. Damage is
-      // applied via the success counter on the logged entry — GM clicks +
-      // to mark each fireball success. The number entered here also fuels
-      // the +N extra-villain-card forecast for next round (separate from
-      // the per-success damage application).
-      if (target !== 'Algorithm') return null;
+      // Range Fireball is ranged AoE — per battle-info §2: damage =
+      // (30 + 10/success) to all in AoE radius. The success counter on
+      // each logged entry drives per-target HP application.
       const raw = prompt(
-        'Range Fireball at the Algorithm — how many die-successes vs Algo?\n' +
-        '(Each success: +1 extra villain card next round AND drives the success counter on the logged action for damage application.)',
+        'Range Fireball — how many die-successes? (Drives damage on each target in the AoE.)',
         '0',
       );
-      if (raw == null) return { abort: true }; // cancelled
+      if (raw == null) return { abort: true };
       const successes = Math.max(0, parseInt(raw, 10) || 0);
-      state.currentRound.heroPhase.notes.push(
-        `[TRIGGER] Rascal fireballed the Algorithm: ${successes} die-successes — ` +
-        `Algorithm plays +${successes} extra cards next round. Hero phase cut short here.`,
+
+      // Prompt for the full AoE target list — the picked target plus any
+      // others caught in the radius. GM types comma-separated names. Blank
+      // input → just the primary target.
+      const enemiesAvailable = enemyTargetOptions(currentBattleState()).map((e) => e.name);
+      const aoeRaw = prompt(
+        `Range Fireball AoE — list ALL targets in radius (comma-separated). Primary target "${target}" included automatically.\n\n` +
+        `Available enemies: ${enemiesAvailable.join(', ') || '(none)'}`,
+        '',
       );
-      await setBossRascalExtraCards(successes).catch((err) =>
-        log(`rascalExtraCards write failed: ${err?.message || err}`),
-      );
+      const extraTargets = (aoeRaw || '')
+        .split(',').map((s) => s.trim()).filter(Boolean)
+        .filter((n) => n !== target); // dedupe primary
+
+      // Boss-targeted fireball ALSO fuels the +N extra-card trigger.
+      let triggerNote = '';
+      if (target === 'Algorithm' || extraTargets.includes('Algorithm')) {
+        await setBossRascalExtraCards(successes).catch((err) =>
+          log(`rascalExtraCards write failed: ${err?.message || err}`),
+        );
+        state.currentRound.heroPhase.notes.push(
+          `[TRIGGER] Rascal fireballed the Algorithm: ${successes} die-successes — ` +
+          `Algorithm plays +${successes} extra cards next round. Hero phase cut short here.`,
+        );
+        triggerNote = `→ +${successes} villain cards next round`;
+      }
+
       return {
-        note: `${successes} successes → +${successes} villain cards next round`,
-        flipToVillain: true,
-        extra: { extraCards: successes, presetSuccesses: successes },
+        note: `${successes} successes${triggerNote}`,
+        // Only force villain phase if the boss got hit (the trigger fires).
+        flipToVillain: target === 'Algorithm' || extraTargets.includes('Algorithm'),
+        extra: { extraTargets, presetSuccesses: successes },
       };
     }
     default:
@@ -1004,6 +1080,16 @@ async function onCrystalSlotClick(color) {
 }
 
 async function endHeroTurn() {
+  // Stuns applied in round N-1's villain phase consumed THIS hero phase's
+  // action (PC couldn't act). Clear them now so the PC is unstunned for
+  // round N's villain phase. Per battle-info §3: stun = one action lost,
+  // and Griz's clarification: "Heroes unstun end of party turn (are
+  // unstunned when algo's turn again)".
+  try {
+    await ageStunsAtRoundEnd(state.overrides.round);
+  } catch (err) {
+    log(`stun age failed: ${err?.message || err}`);
+  }
   state.currentRound.phase = 'villain';
   saveCurrentRound();
   renderAll();
@@ -1035,30 +1121,106 @@ function renderLackeyAttacksBlock() {
       .map((n) => `<option value="${escapeAttr(n)}" ${(existing?.target || suitHero) === n ? 'selected' : ''}>${escapeHtml(n)}</option>`)
       .join('');
 
+    const sp = l.specialsRemaining ?? 0;
+    const outOfSp = sp <= 0;
+
     const row = document.createElement('div');
     row.className = 'lackey-attack-row' + (existing?.result ? ' resolved' : '');
-    row.innerHTML = `
-      <div><strong>${escapeHtml(l.archetype)}</strong> <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP)</span></div>
-      <select data-target>${targetOptions}</select>
-      <button class="saved" data-result="save">${existing?.result === 'save' ? '✓ Saved' : 'Save'}</button>
-      <button class="failed" data-result="fail">${existing?.result === 'fail' ? '✓ Failed' : 'Fail'}</button>
-    `;
-    row.querySelector('select[data-target]').addEventListener('change', (e) => {
-      upsertLackeyAttack(l, e.target.value, existing?.result || null);
-    });
-    row.querySelectorAll('button[data-result]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tgt = row.querySelector('select[data-target]').value;
-        upsertLackeyAttack(l, tgt, btn.getAttribute('data-result'));
+
+    if (outOfSp) {
+      // Basic melee fallback per battle-info §6: 15 dmg when out of specials.
+      const targetAppliedCls = existing?.mode === 'basic' ? ' resolved' : '';
+      row.classList.toggle('resolved', !!existing?.result);
+      row.innerHTML = `
+        <div>
+          <strong>${escapeHtml(l.archetype)}</strong>
+          <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, BASIC)</span>
+        </div>
+        <select data-target>${targetOptions}</select>
+        <button class="failed" data-result="basic"${existing?.mode === 'basic' ? ' disabled' : ''}>
+          ${existing?.mode === 'basic' ? `✓ Basic ${existing.appliedHp || 15}` : 'Basic atk 15'}
+        </button>
+        <span class="muted" style="font-size:10px;">out of SP</span>
+      `;
+      row.querySelector('select[data-target]').addEventListener('change', (e) => {
+        if (existing?.mode === 'basic') upsertLackeyAttack(l, e.target.value, 'basic', 'basic');
       });
-    });
+      row.querySelector('button[data-result="basic"]').addEventListener('click', () => {
+        const tgt = row.querySelector('select[data-target]').value;
+        upsertLackeyAttack(l, tgt, 'basic', 'basic').catch((err) =>
+          log(`lackey basic failed: ${err?.message || err}`),
+        );
+      });
+    } else {
+      row.innerHTML = `
+        <div>
+          <strong>${escapeHtml(l.archetype)}</strong>
+          <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, SP ${sp})</span>
+        </div>
+        <select data-target>${targetOptions}</select>
+        <button class="saved" data-result="save">${existing?.result === 'save' ? '✓ Saved' : 'Save'}</button>
+        <button class="failed" data-result="fail">${existing?.result === 'fail' ? '✓ Failed' : 'Fail'}</button>
+      `;
+      row.querySelector('select[data-target]').addEventListener('change', (e) => {
+        if (existing?.result) {
+          upsertLackeyAttack(l, e.target.value, existing.result, existing.mode || 'special');
+        }
+      });
+      row.querySelectorAll('button[data-result]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tgt = row.querySelector('select[data-target]').value;
+          upsertLackeyAttack(l, tgt, btn.getAttribute('data-result'), 'special').catch((err) =>
+            log(`lackey attack failed: ${err?.message || err}`),
+          );
+        });
+      });
+    }
     wrap.appendChild(row);
   }
   root.appendChild(wrap);
 }
 
-function upsertLackeyAttack(lackey, target, result) {
+async function upsertLackeyAttack(lackey, target, result, mode = 'special') {
   const idx = state.currentRound.lackeyAttacks.findIndex((la) => la.lackeyId === lackey.id);
+  const prev = idx >= 0 ? state.currentRound.lackeyAttacks[idx] : null;
+
+  // Compute the damage that goes with the new (target, result, mode).
+  const binding = SUIT_BINDING[lackey.suit] || { fullDmg: 12, halfDmg: 6 };
+  let newDmg = 0;
+  if (mode === 'basic') newDmg = 15;
+  else if (result === 'save') newDmg = binding.halfDmg;
+  else if (result === 'fail') newDmg = binding.fullDmg;
+
+  // Reverse any previously-applied damage from this lackey's attack row.
+  if (prev?.appliedHp && prev?.target) {
+    await applyHpDelta(prev.target, +prev.appliedHp);
+  }
+  // Reverse a previous stun if it was a special-fail and now we're changing.
+  if (prev?.result === 'fail' && prev?.mode === 'special' && prev?.target) {
+    await setPcStunned(prev.target, false);
+  }
+
+  // SP accounting: a special attack (first declaration this round) consumes
+  // one of the lackey's specials. Re-declaring same target/result within
+  // 'special' mode shouldn't double-charge. Switching INTO special mode from
+  // basic re-charges; switching OUT (special → basic) refunds.
+  const prevConsumedSp = prev?.mode === 'special';
+  const nowConsumesSp = mode === 'special';
+  if (!prevConsumedSp && nowConsumesSp) {
+    await changeLackeySpecial(lackey.id, -1);
+  } else if (prevConsumedSp && !nowConsumesSp) {
+    await changeLackeySpecial(lackey.id, +1);
+  }
+
+  // Apply new damage.
+  if (newDmg > 0 && target) {
+    await applyHpDelta(target, -newDmg);
+  }
+  // Apply stun if special-fail.
+  if (result === 'fail' && mode === 'special' && target) {
+    await setPcStunned(target, true, state.overrides.round);
+  }
+
   const entry = {
     lackeyId: lackey.id,
     lackey: lackey.archetype,
@@ -1066,6 +1228,8 @@ function upsertLackeyAttack(lackey, target, result) {
     target,
     cardName: null,
     result,
+    mode, // 'special' or 'basic'
+    appliedHp: newDmg,
   };
   if (idx >= 0) state.currentRound.lackeyAttacks[idx] = entry;
   else state.currentRound.lackeyAttacks.push(entry);
@@ -1073,34 +1237,59 @@ function upsertLackeyAttack(lackey, target, result) {
   renderAll();
 }
 
+async function setPcStunned(pcName, stunned, round) {
+  await mutateTags(
+    (it) => {
+      const tag = it?.metadata?.[METADATA_NAMESPACE];
+      return tag?.role === 'pc' && tag?.name === pcName;
+    },
+    (tag) => {
+      tag.stunned = !!stunned;
+      if (stunned && typeof round === 'number') tag.stunnedAt = round;
+      else delete tag.stunnedAt;
+    },
+  );
+}
+
 // ----- OBR write helpers (Batch B side-effects) -----
 
 // Specials remaining lives in Stat Bubbles' 'temporary health' field per
-// Griz's reuse. Capped at 2 base — Stat Bubbles itself has no max for this
-// field, but the boss-fight rule is 2 SPs/encounter so we clamp on the
-// way up.
+// Griz's reuse. NO upper cap — previous Math.min(2, ...) clobbered values
+// the GM had set higher than 2 in Stat Bubbles' own UI, surfacing as a
+// "-2 per click" instead of -1. 0 is still the floor.
+async function changeTempHealth(item, delta, label = '') {
+  if (!item) return;
+  const apply = (sb) => {
+    if (sb && typeof sb['temporary health'] === 'number') {
+      const before = sb['temporary health'];
+      sb['temporary health'] = Math.max(0, before + delta);
+      console.log(`[MP] changeTempHealth ${label}: ${before} → ${sb['temporary health']} (delta=${delta})`);
+    }
+  };
+  if (state.inOwlbear) {
+    await OBR.scene.items.updateItems([item.id], (drafts) => {
+      for (const draft of drafts) {
+        const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
+        apply(sb);
+        if (sb) draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+      }
+    });
+  } else {
+    apply(item.metadata?.[STAT_BUBBLES_NAMESPACE]);
+  }
+}
+
 async function changeSpecial(pcName, delta) {
   const item = state.items.find((it) => {
     const tag = it?.metadata?.[METADATA_NAMESPACE];
     return tag?.role === 'pc' && tag?.name === pcName;
   });
-  if (!item) return;
-  if (state.inOwlbear) {
-    await OBR.scene.items.updateItems([item.id], (drafts) => {
-      for (const draft of drafts) {
-        const sb = draft.metadata?.[STAT_BUBBLES_NAMESPACE];
-        if (sb && typeof sb['temporary health'] === 'number') {
-          sb['temporary health'] = Math.max(0, Math.min(2, sb['temporary health'] + delta));
-          draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
-        }
-      }
-    });
-  } else {
-    const sb = item.metadata?.[STAT_BUBBLES_NAMESPACE];
-    if (sb && typeof sb['temporary health'] === 'number') {
-      sb['temporary health'] = Math.max(0, Math.min(2, sb['temporary health'] + delta));
-    }
-  }
+  await changeTempHealth(item, delta, `PC ${pcName}`);
+}
+
+async function changeLackeySpecial(lackeyId, delta) {
+  const item = findLackeyItemByTagId(lackeyId);
+  await changeTempHealth(item, delta, `lackey ${lackeyId}`);
 }
 
 // HP write to a named target (PC name / "Algorithm" / lackey archetype).
@@ -1640,13 +1829,9 @@ function endRound() {
   setAllPcsBubbled(false).catch((err) => log(`bubble clear failed: ${err?.message || err}`));
   setBossTauntedTo(false).catch((err) => log(`taunt clear failed: ${err?.message || err}`));
 
-  // Age stuns: any PC whose stunnedAt < current round has already lost their
-  // hero phase action; clear so they can act next round. Per battle-info §3:
-  // stun = one action lost. Run BEFORE the round bump below so the
-  // comparison uses the just-ended round number.
-  ageStunsAtRoundEnd(state.overrides.round).catch((err) =>
-    log(`stun age failed: ${err?.message || err}`),
-  );
+  // Stun aging happens in endHeroTurn, not here — the stun-clear point is
+  // "end of party turn" (right before villain phase starts again), not
+  // end of round. See endHeroTurn for the comment.
 
   // Bump round + clear chain + reset currentRound (phase → party for next round).
   state.overrides.round = (state.overrides.round || 1) + 1;

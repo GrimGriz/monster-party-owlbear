@@ -57,6 +57,10 @@
     .hero-pc.goose   { border-left-color: #5fc5b3; }
     .hero-pc.dead    { opacity: 0.4; }
     .hero-pc.stunned { opacity: 0.6; }
+    .hero-pc.acted   { opacity: 0.5; filter: grayscale(0.5); }
+    .hero-pc.acted h4::after { content: '✓ acted'; color: #5fc5b3; font-size: 10px;
+                                margin-left: 6px; font-weight: 400; text-transform: uppercase;
+                                letter-spacing: 0.5px; }
     .hero-pc h4 { margin: 0 0 4px; font-size: 13px; display: flex; justify-content: space-between;
                   align-items: center; }
     .hero-pc .pc-stats { font-size: 11px; color: #8a8a9a; margin-bottom: 6px; }

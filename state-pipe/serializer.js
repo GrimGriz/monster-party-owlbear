@@ -106,6 +106,10 @@ export function serializeScene(obrItems, gmOverrides = {}) {
           archetype: tag.archetype || 'unknown',
           hp: numOr(sb.health, numOr(tag.hp, 0)),
           alive: tag.alive !== false,
+          // Lackey specials remaining lives in Stat Bubbles' 'temporary
+          // health' (same reuse as PCs). When 0, lackey falls back to
+          // melee basic 15 dmg per battle-info §6.
+          specialsRemaining: numOr(sb['temporary health'], 0),
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted
             : [],
