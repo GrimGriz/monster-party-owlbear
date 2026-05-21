@@ -67,6 +67,11 @@ DC is roll-to-meet (lower = easier save = your chain breaks faster). High-HP her
 | ASPIRATION | gold | Denny |
 | EXTRACTION | purple (chain-extender) | Beholda |
 
+## Your lackeys
+Each round you also command your living lackeys. For every alive lackey, decide which hero they target this round. The GM resolves their save vs the lackey's suit-bound DC (full damage on fail, half on save). Lackeys exhausted of specials fall back to a flat 15-damage basic melee.
+
+When you write \`lackeyOrders\` (see schema below), pick targets that coordinate with your card chain: stack pressure on a hero you're chaining at to push them past the bubble's defense, or send a lackey to soften a hero you're NOT chaining so the party has to spend resources on two fronts. If a lackey is TAUNTED (you'll see "TAUNTED to Denny" in their state line), they MUST target Denny — no choice.
+
 ## The party's defenses you should know about
 
 - **VNA Bubble** (Beholda's special). When active, all PCs go from AC 14 to AC 19. Bubble drops the moment Beholda is stunned. Your bubble-pop priority is therefore to chain EXTRACTION at Beholda early; landing a stun on her opens up the rest of the party to your lackeys' regular attacks.
@@ -126,6 +131,13 @@ Return a SINGLE JSON OBJECT and nothing else — no markdown, no preamble, no co
     { "order": 3, ... },
     { "order": 4, ... }
   ],
+  "lackeyOrders": [
+    {
+      "lackeyId": "Alex-Jones-Bot",
+      "targetHero": "Goose",
+      "intent": "one sentence on what this lackey is doing this round"
+    }
+  ],
   "monologueIfChainCompletes": "the speech you deliver when all 4 fail — 75-200 words, savoring the moment, justifying the lackey-summon",
   "strategicNote": "one or two sentences for the GM on what you're trying to set up"
 }
@@ -138,6 +150,8 @@ Constraints:
 - \`targetHero\` must match the suit binding (CONTROL→Rascal, EMOTION→Goose, ASPIRATION→Denny, EXTRACTION→Beholda).
 - \`cardName\` must be a card name from the deck you were given, and must not be in the exhausted list the GM sent you.
 - \`order\` is 1-4 representing chain position.
+- \`lackeyOrders\` MUST include one entry per alive lackey shown in the state. \`lackeyId\` is the lackey's archetype name as it appeared in the state block (e.g. "Alex-Jones-Bot"). \`targetHero\` is one of Denny / Beholda / Rascal / Goose. If a lackey is TAUNTED to Denny in the state, \`targetHero\` MUST be "Denny" for that lackey.
+- If there are no alive lackeys, return \`lackeyOrders: []\`.
 - Output JSON only. No code fences. No commentary.`;
 }
 
@@ -397,5 +411,21 @@ export function parseVillainResponse(rawText) {
       throw new Error(`Suit ${entry.suit} should target ${expectedHero}, got ${entry.targetHero}`);
     }
   }
+  // lackeyOrders is optional for backwards-compat with older responses but
+  // we coerce to an array so downstream code (panel pre-fill) can always
+  // iterate. Each entry needs a lackeyId and targetHero — we don't enforce
+  // that the lackeyId matches a known lackey here since that requires
+  // BattleState context the parser doesn't have; the panel does that check.
+  const PC_NAMES = new Set(['Denny', 'Beholda', 'Rascal', 'Goose']);
+  const orders = Array.isArray(obj.lackeyOrders) ? obj.lackeyOrders : [];
+  for (const order of orders) {
+    if (!order || typeof order.lackeyId !== 'string' || !order.lackeyId) {
+      throw new Error(`lackeyOrders entry missing lackeyId: ${JSON.stringify(order)}`);
+    }
+    if (!PC_NAMES.has(order.targetHero)) {
+      throw new Error(`lackeyOrders[${order.lackeyId}].targetHero must be Denny/Beholda/Rascal/Goose, got ${order.targetHero}`);
+    }
+  }
+  obj.lackeyOrders = orders;
   return obj;
 }

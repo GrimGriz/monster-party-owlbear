@@ -141,7 +141,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r7';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r8';
 
 main();
 
@@ -764,6 +764,16 @@ function renderHeroActionsLog() {
       });
     });
     root.appendChild(row);
+
+    // Inline AoE picker — appears under each Range Fireball PRIMARY entry
+    // (sideEffect='fireball'; AoE extras have sideEffect=null and so don't
+    // get one). Lists in-range enemies not already part of the AoE; clicking
+    // + adds a new AoE entry with successes copied from the primary's
+    // current count (so HP applies in step with what the GM has rolled).
+    if (a.sideEffect === 'fireball') {
+      const aoeChips = renderAoePickerChips(idx);
+      if (aoeChips) root.appendChild(aoeChips);
+    }
   });
 
   crystals.forEach((c, idx) => {
@@ -797,6 +807,95 @@ function formatAppliedAmount(formula, amt) {
     return `(${amt}/PC ${formula.kind})`;
   }
   return `(${amt} ${formula.kind})`;
+}
+
+// Build the inline AoE picker DOM for the Fireball primary entry at index
+// `primaryIdx`. Returns null if no candidates remain. Each chip is a button
+// labeled "+ <enemy>" — clicking it spawns a new AoE entry mirroring the
+// primary's pc / formula / successes so the new target's HP applies at the
+// same damage as what's already been counted.
+function renderAoePickerChips(primaryIdx) {
+  const primary = state.currentRound.heroPhase.pcActions[primaryIdx];
+  if (!primary) return null;
+  const bs = currentBattleState();
+  const enemies = enemyTargetOptions(bs).map((e) => e.name);
+  // Exclude the primary's own target and any enemies already represented in
+  // the AoE (other fire-actionId entries for the same pc in this round).
+  const inAoeAlready = new Set(
+    (state.currentRound.heroPhase.pcActions || [])
+      .filter((a) => a.actionId === 'fire' && a.pc === primary.pc)
+      .map((a) => a.target),
+  );
+  const candidates = enemies.filter((n) => !inAoeAlready.has(n));
+  if (!candidates.length) return null;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'aoe-picker';
+  wrap.innerHTML = `<span class="muted" style="font-size: 11px;">+ to add to AoE:</span>`;
+  for (const enemy of candidates) {
+    const chip = document.createElement('button');
+    chip.className = 'aoe-chip ghost';
+    chip.style.cssText = 'font-size: 11px; padding: 2px 8px; margin-left: 4px;';
+    chip.textContent = `+ ${enemy}`;
+    chip.addEventListener('click', () => {
+      addAoeTarget(primaryIdx, enemy).catch((err) =>
+        log(`add AoE target failed: ${err?.message || err}`),
+      );
+    });
+    wrap.appendChild(chip);
+  }
+  return wrap;
+}
+
+// Push a new AoE-extra action entry for `enemyName`, with successes copied
+// from the primary so HP applies at the same damage. The new entry has
+// sideEffect=null and isSpecial=false (the AoE doesn't re-consume SP).
+async function addAoeTarget(primaryIdx, enemyName) {
+  const primary = state.currentRound.heroPhase.pcActions[primaryIdx];
+  if (!primary) return;
+  const successes = primary.successes || 0;
+  const appliedAmount = computeFormulaAmount(primary.formula, successes);
+  const newEntry = {
+    pc: primary.pc,
+    action: `${primary.action.replace(/ \(AoE\)$/, '')} (AoE)`,
+    actionId: primary.actionId,
+    target: enemyName,
+    note: '',
+    successes,
+    appliedAmount,
+    formula: primary.formula || null,
+    isSpecial: false,
+    sideEffect: null,
+    sideEffectExtra: null,
+    tauntExtras: null,
+  };
+  state.currentRound.heroPhase.pcActions.push(newEntry);
+  saveCurrentRound();
+  renderAll();
+  // Apply HP delta for the new target if any damage has been counted.
+  if (appliedAmount > 0 && newEntry.formula) {
+    await applyFormulaDelta(enemyName, newEntry.formula, appliedAmount);
+    renderAll();
+  }
+  // If the new target is the boss, re-sync rascalExtraCards AND emit the
+  // [TRIGGER] note (once per round) so the villain Claude sees the interrupt
+  // in its next-round history even if the primary wasn't the boss.
+  if (enemyName === 'Algorithm') {
+    const hasTrigger = (state.currentRound.heroPhase.notes || []).some((n) =>
+      n.startsWith('[TRIGGER] Rascal fireballed the Algorithm'),
+    );
+    if (!hasTrigger) {
+      state.currentRound.heroPhase.notes.push(
+        `[TRIGGER] Rascal fireballed the Algorithm — algo reacts (interrupt). ` +
+        `Hero phase continues for unstunned PCs. +N extra cards next round (N = die-successes on the cast).`,
+      );
+      saveCurrentRound();
+      renderAll();
+    }
+    await syncRascalExtraCards().catch((err) =>
+      log(`rascalExtraCards sync failed: ${err?.message || err}`),
+    );
+  }
 }
 
 async function adjustActionSuccesses(idx, delta) {
@@ -1138,32 +1237,18 @@ async function dispatchSideEffect(pcName, action, target) {
     case 'fireball': {
       // Range Fireball is ranged AoE — per battle-info §2: damage =
       // (30 + 10/success) to all in AoE radius. Successes flow through the
-      // standard per-row ± counter (no upfront prompt — Griz needs to roll
-      // the dice AFTER clicking the button, not before).
+      // standard per-row ± counter (no upfront prompt). AoE extras are
+      // added via the INLINE picker chips rendered below the primary entry
+      // (see renderHeroActionsLog → renderAoePicker) so the GM gets a
+      // visible candidate list with + and × per chip instead of a popup.
       //
       // The boss-hit trigger logs a [TRIGGER] note + writes rascalExtraCards
       // but does NOT cut the hero turn. Per the interrupt-return model: the
       // algorithm reacts (GM resolves narratively this turn), then remaining
       // unstunned PCs finish their hero phase, then End Hero Turn proceeds
       // normally. The +N extra cards lands on next round's villain chain.
-      const enemiesAvailable = enemyTargetOptions(currentBattleState()).map((e) => e.name);
-      const aoeRaw = prompt(
-        `Range Fireball AoE — list ALL targets in radius (comma-separated). Primary target "${target}" included automatically.\n\n` +
-        `Available enemies: ${enemiesAvailable.join(', ') || '(none)'}`,
-        '',
-      );
-      const extraTargets = (aoeRaw || '')
-        .split(',').map((s) => s.trim()).filter(Boolean)
-        .filter((n) => n !== target); // dedupe primary
-
-      // Boss-targeted fireball fuels the +N extra-card trigger. Successes
-      // start at 0 here; the GM ticks the row counter after rolling.
       let triggerNote = '';
-      const hitsBoss = target === 'Algorithm' || extraTargets.includes('Algorithm');
-      if (hitsBoss) {
-        // rascalExtraCards write happens lazily when GM ticks successes — see
-        // adjustActionSuccesses. For the initial 0-success cast we still log
-        // the trigger note so the villain Claude sees the interrupt in history.
+      if (target === 'Algorithm') {
         state.currentRound.heroPhase.notes.push(
           `[TRIGGER] Rascal fireballed the Algorithm — algo reacts (interrupt). ` +
           `Hero phase continues for unstunned PCs. +N extra cards next round (N = die-successes on the cast).`,
@@ -1173,9 +1258,9 @@ async function dispatchSideEffect(pcName, action, target) {
 
       return {
         note: `AoE${triggerNote}`,
-        // Interrupt-return model: do NOT flip phase. Hero phase continues.
         flipToVillain: false,
-        extra: { extraTargets, presetSuccesses: 0 },
+        // No AoE extras at cast time — GM adds them inline after.
+        extra: { extraTargets: [], presetSuccesses: 0 },
       };
     }
     default:
@@ -1256,8 +1341,19 @@ function renderLackeyAttacksBlock() {
     const suitHero = (l.suit && l.suit in {EMOTION:1,CONTROL:1,ASPIRATION:1,EXTRACTION:1})
       ? ({ EMOTION: 'Goose', CONTROL: 'Rascal', ASPIRATION: 'Denny', EXTRACTION: 'Beholda' })[l.suit]
       : 'Goose';
+    // Resolve the default target with precedence:
+    //   1. existing.target — GM already picked something this round.
+    //   2. tauntedTo — Denny's taunt forces the lackey to target her.
+    //   3. villain lackeyOrder for this lackey (by archetype OR by id).
+    //   4. suit-binding fallback.
+    const order = (state.pendingChain?.lackeyOrders || []).find(
+      (o) => o.lackeyId === l.archetype || o.lackeyId === l.id,
+    );
+    const villainTarget = order?.targetHero;
+    const tauntForced = l.tauntedTo === 'Denny' ? 'Denny' : null;
+    const defaultTarget = existing?.target || tauntForced || villainTarget || suitHero;
     const targetOptions = PC_ROSTER
-      .map((n) => `<option value="${escapeAttr(n)}" ${(existing?.target || suitHero) === n ? 'selected' : ''}>${escapeHtml(n)}</option>`)
+      .map((n) => `<option value="${escapeAttr(n)}" ${defaultTarget === n ? 'selected' : ''}>${escapeHtml(n)}</option>`)
       .join('');
 
     const sp = l.specialsRemaining ?? 0;
@@ -1269,6 +1365,9 @@ function renderLackeyAttacksBlock() {
     const tauntFlag = l.tauntedTo
       ? `<span class="error" style="font-size:10px; margin-left:6px;">TAUNTED → ${escapeHtml(l.tauntedTo)}</span>`
       : '';
+    const villainIntent = order?.intent
+      ? `<div class="muted" style="font-size:11px; margin-top:2px;">▸ ${escapeHtml(order.intent)}</div>`
+      : '';
 
     if (outOfSp) {
       // Basic melee fallback per battle-info §6: 15 dmg when out of specials.
@@ -1279,6 +1378,7 @@ function renderLackeyAttacksBlock() {
           <strong>${escapeHtml(l.archetype)}</strong>
           <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, BASIC)</span>
           ${tauntFlag}
+          ${villainIntent}
         </div>
         <select data-target>${targetOptions}</select>
         <button class="failed" data-result="basic"${existing?.mode === 'basic' ? ' disabled' : ''}>
@@ -1305,6 +1405,7 @@ function renderLackeyAttacksBlock() {
           <strong>${escapeHtml(l.archetype)}</strong>
           <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, SP ${sp})</span>
           ${tauntFlag}
+          ${villainIntent}
         </div>
         <select data-target>${targetOptions}</select>
         <button class="saved" data-result="save">${existing?.result === 'save' && existing?.mode !== 'basic' ? '✓ Saved' : 'Save'}</button>
@@ -1935,6 +2036,11 @@ async function generateChain() {
       // deltas without needing numeric annotations in hero-action log lines.
       startHp: snapshotHp(bs),
       chain: parsed.chain.map((c) => ({ ...c, result: null, skipped: false })),
+      // lackeyOrders: villain's per-lackey targeting decisions for this round.
+      // Pre-fills the lackey row dropdowns in renderLackeyAttacksBlock. The GM
+      // can still override at click time (e.g. if the order doesn't make sense
+      // in play); taunt-redirect (lackey.tauntedTo='Denny') trumps the order.
+      lackeyOrders: Array.isArray(parsed.lackeyOrders) ? parsed.lackeyOrders : [],
       monologueIfChainCompletes: parsed.monologueIfChainCompletes || '',
       strategicNote: parsed.strategicNote || '',
       chainCompleted: false,
