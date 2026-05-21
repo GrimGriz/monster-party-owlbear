@@ -315,20 +315,42 @@ function formatStartHpLine(startHp) {
   return parts.length ? `HP entering your turn — ${parts.join(' · ')}` : '';
 }
 
+// Scan `text` from the first `{` and return the substring through its
+// matching `}` — honoring JSON string boundaries so braces inside string
+// values don't confuse the count. Returns null if no balanced object.
+function extractFirstBalancedObject(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 export function parseVillainResponse(rawText) {
   // Strip code fences and any leading/trailing prose. Be defensive: a fresh
   // instance might add markdown or a preamble despite instructions.
   let text = (rawText || '').trim();
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenceMatch) text = fenceMatch[1].trim();
-  // If still wrapped in prose, find the outermost { ... }.
-  const firstBrace = text.indexOf('{');
-  const lastBrace = text.lastIndexOf('}');
-  if (firstBrace > 0 || lastBrace < text.length - 1) {
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      text = text.slice(firstBrace, lastBrace + 1);
-    }
-  }
+  // Find the first balanced { ... } object — robust to prose BEFORE the
+  // JSON, prose AFTER the JSON, and to `{` / `}` inside string values
+  // (which lastIndexOf-based slicing would mishandle and produce the
+  // "Unexpected non-whitespace character after JSON" error).
+  const extracted = extractFirstBalancedObject(text);
+  if (extracted) text = extracted;
 
   let obj;
   try {

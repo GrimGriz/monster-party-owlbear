@@ -133,7 +133,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r4';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r5';
 
 main();
 
