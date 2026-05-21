@@ -208,15 +208,20 @@ function formatCurrentHeroPhase(heroPhase) {
   const lines = [];
   for (const action of heroPhase.pcActions || []) {
     const tgt = action.target ? ` → ${action.target}` : '';
-    const note = action.note ? ` (${action.note})` : '';
-    lines.push(`- ${action.pc}: ${action.action}${tgt}${note}`);
+    const succ = (action.successes ?? 0) > 0 ? ` ×${action.successes}` : '';
+    const applied = action.appliedAmount ? ` (${action.appliedAmount} ${action.formula?.kind || ''})` : '';
+    const note = action.note ? ` — ${action.note}` : '';
+    lines.push(`- ${action.pc}: ${action.action}${tgt}${succ}${applied}${note}`);
   }
   for (const crystal of heroPhase.crystalsUsed || []) {
     const note = crystal.note ? ` — ${crystal.note}` : '';
     lines.push(`- Party used the **${crystal.color}** crystal${note}`);
   }
+  // Live in-round notes use the `notes` field (history uses `heroNotes`).
+  // Surface them verbatim so the villain sees [TRIGGER] entries (e.g. its
+  // own Fireball-interrupt reaction) before composing the next chain.
   for (const note of heroPhase.notes || []) {
-    lines.push(`- [GM] ${note}`);
+    lines.push(`- ${note}`);
   }
   return lines.length ? lines.join('\n') : '';
 }
@@ -277,7 +282,9 @@ function formatHistoryRound(round) {
   if (round.heroActions?.length) {
     lines.push('Hero turn:');
     for (const action of round.heroActions) {
-      lines.push(`  - ${action.pc}: ${action.action}${action.target ? ` → ${action.target}` : ''}${action.note ? ` (${action.note})` : ''}`);
+      const succ = (action.successes ?? 0) > 0 ? ` ×${action.successes}` : '';
+      const applied = action.appliedAmount ? ` (${action.appliedAmount} ${action.formula?.kind || ''})` : '';
+      lines.push(`  - ${action.pc}: ${action.action}${action.target ? ` → ${action.target}` : ''}${succ}${applied}${action.note ? ` — ${action.note}` : ''}`);
     }
   }
   if (round.crystalsUsed?.length) {
@@ -286,16 +293,25 @@ function formatHistoryRound(round) {
       lines.push(`  - Party used the ${crystal.color} crystal${note}`);
     }
   }
+  // heroNotes carries [TRIGGER] entries (e.g. Rascal Fireball at Algorithm)
+  // and any [GM]/[NOTE] annotations the panel pushed during the round. Surface
+  // these so the villain Claude sees its own interrupt-trigger in history and
+  // can monologue about it ("haha fools") on the next turn.
+  if (round.heroNotes?.length) {
+    for (const note of round.heroNotes) lines.push(`  - ${note}`);
+  }
   if (round.lackeyAttacks?.length) {
     lines.push('Your lackeys:');
     for (const la of round.lackeyAttacks) {
       const outcome = la.result === 'save' ? 'SAVED (half dmg)' :
                       la.result === 'fail' ? 'FAILED (full dmg)' :
+                      la.result === 'basic' ? `Basic ${la.appliedHp || 15} dmg` :
                       la.result || 'declared';
-      lines.push(`  - ${la.lackey} (${la.suit}) → ${la.target}${la.cardName ? ` [${la.cardName}]` : ''}: ${outcome}`);
+      const dmg = la.appliedHp ? ` (${la.appliedHp} dmg)` : '';
+      lines.push(`  - ${la.lackey} (${la.suit}) → ${la.target}${la.cardName ? ` [${la.cardName}]` : ''}: ${outcome}${dmg}`);
     }
   }
-  if (round.notes) lines.push(`  Notes: ${round.notes}`);
+  if (round.heroSummary) lines.push(`  GM summary: ${round.heroSummary}`);
   return lines.join('\n');
 }
 

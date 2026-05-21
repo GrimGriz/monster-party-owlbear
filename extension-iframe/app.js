@@ -133,7 +133,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r5';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r6';
 
 main();
 
@@ -961,10 +961,10 @@ async function onPcActionClick(pcName, action, pickedTarget) {
   }
 
   // If the side effect forces a phase flip, do it last so the log entry above
-  // is already committed.
+  // is already committed. Use the shared helper so Fireball-interrupt flips
+  // age stuns the same way the End Hero Turn button does.
   if (sideEffectResult?.flipToVillain) {
-    state.currentRound.phase = 'villain';
-    saveCurrentRound();
+    await flipToVillainPhase();
   }
 
   renderAll();
@@ -1079,12 +1079,15 @@ async function onCrystalSlotClick(color) {
   renderHeroPhase();
 }
 
-async function endHeroTurn() {
-  // Stuns applied in round N-1's villain phase consumed THIS hero phase's
-  // action (PC couldn't act). Clear them now so the PC is unstunned for
-  // round N's villain phase. Per battle-info §3: stun = one action lost,
-  // and Griz's clarification: "Heroes unstun end of party turn (are
-  // unstunned when algo's turn again)".
+// Shared phase-flip — used by the End Hero Turn button AND by the Fireball
+// interrupt (Rascal's reaction-trigger phase flip). Both are "end of hero
+// phase" moments mechanically: stuns stamped in round N-1's villain phase
+// have now consumed their one action and should clear, regardless of how
+// the hero phase ended. Stuns NEWLY stamped during this hero phase (e.g.
+// the algorithm's reaction stunning Denny/Goose mid-Fireball) carry
+// stunnedAt = currentRound, so they don't clear yet — they age out at the
+// end of round N+1's hero phase.
+async function flipToVillainPhase() {
   try {
     await ageStunsAtRoundEnd(state.overrides.round);
   } catch (err) {
@@ -1092,6 +1095,10 @@ async function endHeroTurn() {
   }
   state.currentRound.phase = 'villain';
   saveCurrentRound();
+}
+
+async function endHeroTurn() {
+  await flipToVillainPhase();
   renderAll();
 }
 
