@@ -133,7 +133,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r3';
+const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r4';
 
 main();
 
@@ -1612,18 +1612,53 @@ function renderHistory() {
   for (const round of state.history.slice().reverse()) {
     const div = document.createElement('div');
     div.className = 'history-round';
+
     const chainSummary = (round.chain || [])
       .map((c) => `${c.order}. ${c.cardName}→${c.targetHero}: ${c.skipped ? 'skipped' : (c.result || '?')}`)
       .join(' · ');
     const monologue = round.monologueSummoned
-      ? ` · monologue summoned ${round.monologueSummoned}`
+      ? ` · <span class="muted">monologue summoned${round.monologueSummoned !== '(GM-typed lackey)' ? ` ${escapeHtml(round.monologueSummoned)}` : ''}</span>`
       : '';
-    const heroLine = round.heroSummary
-      ? `<div class="muted">Heroes: ${escapeHtml(round.heroSummary)}</div>`
+
+    // Hero actions: per-PC bullets with successes + applied amount when known.
+    const heroBullets = (round.heroActions || [])
+      .filter((a) => !a.action?.endsWith?.('(AoE)') || a.appliedAmount)
+      .map((a) => {
+        const succ = (a.successes ?? 0) > 0 ? ` ×${a.successes}` : '';
+        const applied = a.appliedAmount
+          ? ` <span class="muted">(${a.appliedAmount} ${a.formula?.kind || ''})</span>`
+          : '';
+        const noteMuted = a.note ? ` <span class="muted">(${escapeHtml(a.note)})</span>` : '';
+        return `<div class="muted">  ${escapeHtml(a.pc)}: ${escapeHtml(a.action)}${a.target ? ` → ${escapeHtml(a.target)}` : ''}${succ}${applied}${noteMuted}</div>`;
+      });
+
+    const crystalBullets = (round.crystalsUsed || [])
+      .map((c) => `<div class="muted">  Crystal: ${escapeHtml(c.color)}${c.note ? ` — ${escapeHtml(c.note)}` : ''}</div>`);
+
+    const noteBullets = (round.heroNotes || [])
+      .map((n) => `<div class="muted">  [GM] ${escapeHtml(n)}</div>`);
+
+    const lackeyBullets = (round.lackeyAttacks || [])
+      .map((la) => {
+        const outcome = la.result === 'save' ? 'SAVED (half dmg)' :
+                        la.result === 'fail' ? 'FAILED (full dmg + stun)' :
+                        la.result === 'basic' ? `Basic ${la.appliedHp || 15}` :
+                        la.result || 'declared';
+        const dmg = la.appliedHp ? ` <span class="muted">(${la.appliedHp} dmg)</span>` : '';
+        return `<div class="muted">  ${escapeHtml(la.lackey)} (${escapeHtml(la.suit || '?')}) → ${escapeHtml(la.target || '?')}: ${outcome}${dmg}</div>`;
+      });
+
+    const heroSummaryLine = round.heroSummary
+      ? `<div class="muted">  Notes: ${escapeHtml(round.heroSummary)}</div>`
       : '';
+
     div.innerHTML = `
       <div><strong>Round ${round.round}</strong> ${chainSummary || '(no chain)'}${monologue}</div>
-      ${heroLine}
+      ${heroBullets.join('')}
+      ${crystalBullets.join('')}
+      ${noteBullets.join('')}
+      ${lackeyBullets.join('')}
+      ${heroSummaryLine}
     `;
     list.appendChild(div);
   }
@@ -1859,15 +1894,72 @@ async function appendExhausted(cardNames) {
 }
 
 function copyHistoryToClipboard() {
-  const text = state.history.map((r) =>
-    `Round ${r.round}\n` +
-    (r.chain || []).map((c) => `  ${c.order}. ${c.suit} ${c.cardName}→${c.targetHero}: ${c.skipped ? 'skipped' : c.result}`).join('\n') +
-    (r.heroSummary ? `\nHeroes: ${r.heroSummary}` : '')
-  ).join('\n\n');
+  const text = state.history.map(formatRoundForPaste).join('\n\n');
   copyTextToClipboard(text).then(
     (method) => setChainStatus(`History copied (${method}).`),
     (err) => setChainStatus(`Copy failed: ${err.message || err}`, true),
   );
+}
+
+// Plain-text rich format for the clipboard. Mirrors prompt-builder's
+// formatHistoryRound shape so a paste-into-voice-instance gives the same
+// context the API call would have sent.
+function formatRoundForPaste(r) {
+  const lines = [`Round ${r.round}`];
+  if (r.startHp) {
+    const partyEntries = Object.entries(r.startHp.party || {});
+    const parts = [];
+    if (partyEntries.length) {
+      parts.push(partyEntries.map(([n, s]) => `${n} ${s.hp}/${s.maxHp}`).join(', '));
+    }
+    if (r.startHp.boss && typeof r.startHp.boss.hp === 'number') parts.push(`You: ${r.startHp.boss.hp}`);
+    const aliveLackeys = (r.startHp.lackeys || []).filter((l) => l.alive);
+    if (aliveLackeys.length) parts.push(`Lackeys: ${aliveLackeys.map((l) => `${l.archetype} ${l.hp}`).join(', ')}`);
+    if (parts.length) lines.push(`  HP entering turn — ${parts.join(' · ')}`);
+  }
+  if (r.chain?.length) {
+    lines.push('  Villain chain:');
+    for (const c of r.chain) {
+      const outcome = c.skipped ? 'skipped' :
+                      c.result === 'save' ? 'SAVED (half dmg, chain broke)' :
+                      c.result === 'fail' ? 'FAILED (full dmg, stunned)' :
+                      c.result || 'unresolved';
+      lines.push(`    ${c.order}. ${c.suit ? c.suit + ' ' : ''}${c.cardName} → ${c.targetHero}: ${outcome}`);
+    }
+    if (r.chainBrokenAt != null) lines.push(`    Chain broke at card ${r.chainBrokenAt}.`);
+    if (r.monologueSummoned) lines.push(`    Monologue landed — summoned ${r.monologueSummoned}.`);
+  }
+  if (r.heroActions?.length) {
+    lines.push('  Hero turn:');
+    for (const a of r.heroActions) {
+      const succ = (a.successes ?? 0) > 0 ? ` ×${a.successes}` : '';
+      const applied = a.appliedAmount ? ` (${a.appliedAmount} ${a.formula?.kind || ''})` : '';
+      const note = a.note ? ` — ${a.note}` : '';
+      lines.push(`    ${a.pc}: ${a.action}${a.target ? ` → ${a.target}` : ''}${succ}${applied}${note}`);
+    }
+  }
+  if (r.crystalsUsed?.length) {
+    for (const c of r.crystalsUsed) {
+      const note = c.note ? ` — ${c.note}` : '';
+      lines.push(`    Party used the ${c.color} crystal${note}`);
+    }
+  }
+  if (r.heroNotes?.length) {
+    for (const n of r.heroNotes) lines.push(`    [GM] ${n}`);
+  }
+  if (r.lackeyAttacks?.length) {
+    lines.push('  Your lackeys:');
+    for (const la of r.lackeyAttacks) {
+      const outcome = la.result === 'save' ? 'SAVED (half dmg)' :
+                      la.result === 'fail' ? 'FAILED (full dmg + stun)' :
+                      la.result === 'basic' ? `Basic ${la.appliedHp || 15} dmg` :
+                      la.result || 'declared';
+      const dmg = la.appliedHp ? ` (${la.appliedHp} dmg)` : '';
+      lines.push(`    ${la.lackey} (${la.suit}) → ${la.target}: ${outcome}${dmg}`);
+    }
+  }
+  if (r.heroSummary) lines.push(`  Notes: ${r.heroSummary}`);
+  return lines.join('\n');
 }
 
 // Clipboard write with fallback. OBR's iframe sandbox doesn't grant the
