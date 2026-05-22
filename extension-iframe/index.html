@@ -255,13 +255,24 @@
   <details>
     <summary>Settings</summary>
     <section style="margin-top: 8px;">
-      <label>Voice-mode system prompt</label>
+      <label>Voice-mode workflow</label>
       <div class="muted" style="font-size:11px; margin-bottom:6px;">
-        Copy this once at the start of your voice-mode Claude conversation. Establishes the villain identity, mechanics, deck, and the per-round response format. Subsequent rounds you just paste battle info.
+        <strong>1.</strong> Paste the system prompt once at the start of your voice-mode Claude conversation.<br />
+        <strong>2.</strong> Each round, click "Copy battle info" (in the villain section) → paste into voice-mode → Claude speaks the chain → transcribe the CHAIN/LACKEYS/INTERRUPT/NOTE block back into "Log chain from voice summary".<br />
+        <strong>3.</strong> Reset fight state when starting a fresh run.
       </div>
       <div class="row" style="margin-bottom: 12px;">
         <button id="copy-system-prompt" class="ghost">Copy system prompt (voice mode)</button>
         <span id="system-prompt-status" class="muted"></span>
+      </div>
+
+      <label style="margin-top: 14px;">Reset fight state</label>
+      <div class="muted" style="font-size:11px; margin-bottom:6px;">
+        Restores every PC, boss, and lackey to full HP and SP. Clears stuns, bubbles, taunts, gaze AC reduction, exhausted cards, history, the pending chain, the pending interrupt, the in-flight hero phase, and crystal-used flags. Round counter resets to 1. Confirmation dialog gates the click.
+      </div>
+      <div class="row">
+        <button id="reset-fight-state" class="ghost">Reset fight state</button>
+        <span id="reset-status" class="muted"></span>
       </div>
     </section>
   </details>

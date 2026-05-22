@@ -12,7 +12,7 @@ import { CARDS, BY_SUIT, SUIT_BINDING } from './cards-by-target.js';
 export function buildVillainPrompt(state, history = [], currentRound = {}, opts = {}) {
   return {
     system: buildSystemPrompt(opts),
-    messages: [{ role: 'user', content: buildUserTurn(state, history, currentRound) }],
+    messages: [{ role: 'user', content: buildUserTurn(state, history, currentRound, opts) }],
   };
 }
 
@@ -212,7 +212,7 @@ Speak naturally and theatrically — this is the entertainment. The structured s
 - A taunted enemy's lackey order MUST target Denny.`;
 }
 
-function buildUserTurn(state, history, currentRound = {}) {
+function buildUserTurn(state, history, currentRound = {}, opts = {}) {
   const lines = [];
   lines.push(`# ROUND ${state.round}`);
   lines.push('');
@@ -269,7 +269,21 @@ function buildUserTurn(state, history, currentRound = {}) {
   }
 
   lines.push('## Your move');
-  lines.push('Plan your 4-card chain. Pick one card from each of the four suits, choose the order, and write the rage-post that LARPs each card. The GM will tell you after the chain resolves which saves landed.');
+  if (opts.voiceMode) {
+    // Voice-mode paste lands in a conversation already primed with the
+    // voice-mode response format. Re-anchor here so each round's paste
+    // is self-contained even if the conversation's working memory drifts.
+    lines.push('Respond now in voice-mode shape per the response format you were primed with. Specifically:');
+    lines.push('');
+    lines.push('1. Speak the 4-card chain card-by-card. Before each post: "Chain card N of 4: [SUIT] [CARDNAME], targeting [HERO]." Then deliver the rage-post in voice (50-150 words).');
+    lines.push('2. Declare lackey orders aloud: "Lackey [ARCHETYPE] targets [HERO]. Intent: ..."');
+    lines.push('3. If a "[TRIGGER] Rascal fireballed the Algorithm" line appears in this round\'s hero-phase notes, you have an interrupt this round — declare it: "INTERRUPT! Pulling [SUIT] [CARDNAME] — every PC saves on this." Then deliver the rage-post.');
+    lines.push('4. End with the compact transcribable summary block (CHAIN / LACKEYS / INTERRUPT / NOTE) the GM logs into the panel.');
+    lines.push('');
+    lines.push('Do NOT wait for the GM to confirm saves — the GM resolves saves in the panel after you speak. Just deliver the chain and trust the panel will surface results next round.');
+  } else {
+    lines.push('Plan your 4-card chain. Pick one card from each of the four suits, choose the order, and write the rage-post that LARPs each card. The GM will tell you after the chain resolves which saves landed.');
+  }
 
   return lines.join('\n');
 }

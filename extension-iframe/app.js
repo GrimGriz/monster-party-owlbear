@@ -143,7 +143,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-22-interrupt-r11';
+const BUILD_TAG = '2026-05-22-voice-paste-polish-r12';
 
 main();
 
@@ -617,6 +617,7 @@ function bindUi() {
 
   $('copy-battle-info').addEventListener('click', copyBattleInfoToClipboard);
   $('copy-system-prompt').addEventListener('click', copySystemPromptToClipboard);
+  $('reset-fight-state').addEventListener('click', resetFightState);
   $('log-voice-chain').addEventListener('click', logChainFromVoiceSummary);
   $('clear-chain').addEventListener('click', () => {
     state.pendingChain = null;
@@ -2304,6 +2305,113 @@ function renderErrorBanner(msg) {
   banner.textContent = msg;
   banner.style.padding = '12px';
   document.body.prepend(banner);
+}
+
+// ----- Reset fight state -----
+
+async function resetFightState() {
+  if (!confirm(
+    'Reset fight state?\n\n' +
+    'This restores every PC / boss / lackey to full HP + SP, clears all stuns, ' +
+    'bubbles, taunts, gaze AC reduction, exhausted cards, history, pending ' +
+    'chain, pending interrupt, in-flight hero phase, and crystal-used flags. ' +
+    'Round counter resets to 1.\n\n' +
+    'This is meant for starting a fresh run between tests/streams. ' +
+    'Cannot be undone.'
+  )) return;
+
+  const setStatus = (msg, isErr = false) => {
+    const el = $('reset-status');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = isErr ? '#ff8866' : '';
+    if (!isErr) setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000);
+  };
+
+  try {
+    // 1. In-memory state slots.
+    state.history = [];
+    saveHistory();
+    state.pendingChain = null;
+    savePendingChain();
+    state.pendingInterrupt = null;
+    savePendingInterrupt();
+    state.currentRound = emptyCurrentRound();
+    saveCurrentRound();
+    state.overrides.round = 1;
+    state.overrides.bonusDieWinner = null;
+    state.overrides.rescuedMemberEmojiCount = 0;
+    saveOverrides();
+    hydrateOverridesUi();
+
+    // 2. Walk every tagged item and reset tag + Stat Bubbles.
+    // Per-role resets:
+    //   - PC: HP = max, SP = 2, clear stunned/stunnedAt/bubbled.
+    //   - Boss: HP = max, clear tauntedTo/acReduction/rascalExtraCards/cardsExhausted.
+    //   - Lackey: HP = max, SP from registry (or current sb['max temporary
+    //     health'] if set, else 2 for card users / 0 for non-card-users),
+    //     alive = true, clear cardsExhausted/tauntedTo.
+    //   - Crystal: clear used.
+    const matcher = (it) => !!it?.metadata?.[METADATA_NAMESPACE];
+    const apply = (draft) => {
+      const tag = draft.metadata[METADATA_NAMESPACE];
+      const sb = draft.metadata[STAT_BUBBLES_NAMESPACE];
+      if (!tag) return;
+      if (tag.role === 'pc') {
+        tag.stunned = false;
+        delete tag.stunnedAt;
+        tag.bubbled = false;
+        if (sb && typeof sb['max health'] === 'number') sb.health = sb['max health'];
+        if (sb) sb['temporary health'] = 2;
+      } else if (tag.role === 'boss') {
+        tag.tauntedTo = false;
+        tag.acReduction = 0;
+        tag.rascalExtraCards = 0;
+        tag.cardsExhausted = [];
+        if (sb && typeof sb['max health'] === 'number') sb.health = sb['max health'];
+      } else if (tag.role === 'lackey') {
+        tag.tauntedTo = false;
+        tag.cardsExhausted = [];
+        tag.alive = true;
+        const entry = LACKEY_REGISTRY.find((e) => e.archetype === tag.archetype);
+        if (sb && typeof sb['max health'] === 'number') sb.health = sb['max health'];
+        if (sb) {
+          // Use registry SP default; if not in registry (generic mid-fight
+          // mook), fall back to current sb temp health, else 0.
+          const sp = entry ? entry.sp : (typeof sb['temporary health'] === 'number' ? sb['temporary health'] : 0);
+          sb['temporary health'] = sp;
+        }
+      } else if (tag.role === 'crystal') {
+        tag.used = false;
+      }
+      draft.metadata[METADATA_NAMESPACE] = tag;
+      if (sb) draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+    };
+
+    const items = state.items.filter(matcher);
+    if (items.length) {
+      if (state.inOwlbear) {
+        const ids = items.map((it) => it.id);
+        await OBR.scene.items.updateItems(ids, (drafts) => {
+          for (const draft of drafts) apply(draft);
+        });
+      } else {
+        for (const it of items) apply(it);
+      }
+    }
+
+    // 3. UI re-anchor.
+    const summaryEl = $('hero-summary');
+    if (summaryEl) summaryEl.value = '';
+    const voiceTa = $('voice-summary-input');
+    if (voiceTa) voiceTa.value = '';
+    renderAll();
+
+    setStatus(`Reset: ${items.length} items, round 1.`);
+  } catch (err) {
+    setStatus(`Reset failed: ${err?.message || err}`, true);
+    console.error('[MP] reset failed:', stringifyErr(err));
+  }
 }
 
 // ----- Voice-mode copy helpers -----
