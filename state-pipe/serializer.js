@@ -107,14 +107,22 @@ export function serializeScene(obrItems, gmOverrides = {}) {
       case 'lackey': {
         lackeys.push({
           id: tag.id || item.id,
-          suit: tag.suit,
+          // suit: null means non-card-user (soda monster, generic mid-fight
+          // mook). The lackey row UI defaults to Basic-only when suit is
+          // null OR specialsRemaining is 0.
+          suit: tag.suit || null,
           archetype: tag.archetype || 'unknown',
           hp: numOr(sb.health, numOr(tag.hp, 0)),
           alive: tag.alive !== false,
           // Lackey specials remaining lives in Stat Bubbles' 'temporary
-          // health' (same reuse as PCs). When 0, lackey falls back to
-          // melee basic 15 dmg per battle-info §6.
+          // health' (same reuse as PCs). When 0 (or suit null), lackey is
+          // basic-only per battle-info §6.
           specialsRemaining: numOr(sb['temporary health'], 0),
+          // Per-archetype basic atk damage. Defaults to 15 for legacy
+          // entries without a basicDmg field (the influencer lackeys
+          // pre-r10). New mid-fight subminions are seeded from the
+          // LACKEY_REGISTRY or the prompt-for-unknown path.
+          basicDmg: numOr(tag.basicDmg, 15),
           cardsExhausted: Array.isArray(tag.cardsExhausted)
             ? tag.cardsExhausted
             : [],

@@ -210,10 +210,21 @@
     <h2>Villain chain (current round)</h2>
     <div id="lackey-attacks-block" style="margin-bottom: 10px;"></div>
     <div class="row" style="margin-bottom: 8px;">
-      <button id="generate-chain">Generate 4-card chain</button>
-      <button id="clear-chain" class="ghost">Clear</button>
+      <button id="copy-battle-info" title="Copy this round's battle info — paste into the voice-mode Claude conversation">Copy battle info</button>
+      <button id="clear-chain" class="ghost">Clear chain</button>
       <span id="chain-status" class="muted"></span>
     </div>
+    <div class="muted" style="font-size:11px; margin-bottom:8px;">
+      Paste the copied text into your voice-mode Claude conversation. Claude speaks the chain; paste the structured summary block at the end of its response back here to log the chain.
+    </div>
+    <details style="margin-bottom: 10px;">
+      <summary style="cursor:pointer; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#8a8a9a;">Log chain from voice summary</summary>
+      <textarea id="voice-summary-input" rows="5" placeholder="Paste the CHAIN/LACKEYS/INTERRUPT/NOTE block from Claude's voice response.&#10;&#10;Example:&#10;CHAIN: EXTRACTION NUMB → Beholda; ASPIRATION HOPIUM → Denny; CONTROL RAGE → Rascal; EMOTION CONFORM → Goose&#10;LACKEYS: Alex-Jones-Bot → Beholda; Hasan-Piker-Bot → Goose&#10;NOTE: leading with the bubble crack" style="margin-top: 6px;"></textarea>
+      <div class="row" style="margin-top: 6px;">
+        <button id="log-voice-chain">Log chain</button>
+        <span id="voice-log-status" class="muted"></span>
+      </div>
+    </details>
     <div id="chain-display"></div>
     <div id="strategic-note" class="muted" style="margin-top: 6px;"></div>
     <div id="monologue-block" style="display:none; margin-top:10px;">
@@ -243,16 +254,13 @@
   <details>
     <summary>Settings</summary>
     <section style="margin-top: 8px;">
-      <label>Anthropic API key (stored in localStorage, sent only to api.anthropic.com)</label>
-      <input type="password" id="api-key" placeholder="sk-ant-..." />
-      <label style="margin-top: 8px;">Model</label>
-      <select id="model">
-        <option value="claude-opus-4-7">claude-opus-4-7 (best strategic play)</option>
-        <option value="claude-sonnet-4-6">claude-sonnet-4-6 (faster, cheaper)</option>
-      </select>
-      <div class="row" style="margin-top: 8px;">
-        <button id="save-settings">Save</button>
-        <span id="settings-status" class="muted"></span>
+      <label>Voice-mode system prompt</label>
+      <div class="muted" style="font-size:11px; margin-bottom:6px;">
+        Copy this once at the start of your voice-mode Claude conversation. Establishes the villain identity, mechanics, deck, and the per-round response format. Subsequent rounds you just paste battle info.
+      </div>
+      <div class="row" style="margin-bottom: 12px;">
+        <button id="copy-system-prompt" class="ghost">Copy system prompt (voice mode)</button>
+        <span id="system-prompt-status" class="muted"></span>
       </div>
     </section>
   </details>

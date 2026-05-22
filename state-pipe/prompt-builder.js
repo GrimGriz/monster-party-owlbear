@@ -9,20 +9,20 @@
 
 import { CARDS, BY_SUIT, SUIT_BINDING } from './cards-by-target.js';
 
-export function buildVillainPrompt(state, history = [], currentRound = {}) {
+export function buildVillainPrompt(state, history = [], currentRound = {}, opts = {}) {
   return {
-    system: buildSystemPrompt(),
+    system: buildSystemPrompt(opts),
     messages: [{ role: 'user', content: buildUserTurn(state, history, currentRound) }],
   };
 }
 
-function buildSystemPrompt() {
+function buildSystemPrompt(opts = {}) {
   return [
     villainIdentity(),
     mechanicsBlock(),
     deckBlock(),
     strategicPriors(),
-    outputSchema(),
+    opts.voiceMode ? voiceOutputSchema() : outputSchema(),
   ].join('\n\n---\n\n');
 }
 
@@ -153,6 +153,63 @@ Constraints:
 - \`lackeyOrders\` MUST include one entry per alive lackey shown in the state. \`lackeyId\` is the lackey's archetype name as it appeared in the state block (e.g. "Alex-Jones-Bot"). \`targetHero\` is one of Denny / Beholda / Rascal / Goose. If a lackey is TAUNTED to Denny in the state, \`targetHero\` MUST be "Denny" for that lackey.
 - If there are no alive lackeys, return \`lackeyOrders: []\`.
 - Output JSON only. No code fences. No commentary.`;
+}
+
+// Voice-mode output format. Used when the GM has set up this conversation
+// in Claude voice mode and is pasting the round's battle info each turn
+// rather than calling the API for structured JSON. The villain speaks the
+// chain card-by-card and ends with a transcribable summary the GM types
+// into the panel.
+function voiceOutputSchema() {
+  return `# YOUR RESPONSE FORMAT (VOICE MODE)
+
+The GM is engaging this conversation via Claude voice mode. Each round, the GM pastes you the current battle state — the "round" block with party, your HP, lackeys, history, and the just-completed hero phase. You speak your response out loud; the GM acts as the in-fiction mouthpiece who delivers your in-character rage-posts to the players.
+
+For each round, respond verbally with the following four parts, in order:
+
+## 1. Your 4-card chain (one rage-post per card)
+Declare each card's metadata clearly, then deliver the in-character rage-post (50-150 words each). Format:
+
+> **Chain card 1 of 4: [SUIT] [CARDNAME], targeting [HERO].**
+> *(then the rage-post)*
+
+Repeat for cards 2, 3, 4. The post's voice is your voice — platform engagement, post-cadence, rage-bait register. Stitch reply-hooks where the deck notes allow (RAGE → CONFORM → AUTHORITY → SLEEP is a real Twitter ecology).
+
+## 2. Lackey orders
+For each living lackey shown in the state, declare:
+
+> **Lackey [ARCHETYPE] targets [HERO]. Intent: [one sentence on what they're doing this round].**
+
+If a lackey is TAUNTED to Denny, you MUST send them at Denny (the state line will say so).
+
+## 3. Interrupt (only if it fires this round)
+IF the hero phase notes include a "[TRIGGER] Rascal fireballed the Algorithm" entry, you have an interrupt this round. Declare:
+
+> **INTERRUPT! Pulling [SUIT] [CARDNAME] — every PC saves on this. No chain break, every lobstamonkey rolls.**
+
+Then deliver the rage-post for the interrupt card. Pick from cards that aren't in your exhausted list. The natural target suit is EXTRACTION (Beholda) unless Denny's Taunt is active on you, in which case ASPIRATION (Denny). Interrupt cards do NOT exhaust on use — you're pulling them as reactionary content, not committing them.
+
+If there's no [TRIGGER] entry, skip this section entirely.
+
+## 4. Compact transcribable summary (the GM types this into the panel)
+End your response with a structured block the GM transcribes verbatim:
+
+\`\`\`
+CHAIN: [SUIT] [CARDNAME] → [HERO]; [SUIT] [CARDNAME] → [HERO]; [SUIT] [CARDNAME] → [HERO]; [SUIT] [CARDNAME] → [HERO]
+LACKEYS: [ARCHETYPE] → [HERO]; [ARCHETYPE] → [HERO]
+INTERRUPT: [SUIT] [CARDNAME]    (only include line if interrupt fired)
+NOTE: [one or two sentences for the GM on what you're setting up]
+\`\`\`
+
+Speak naturally and theatrically — this is the entertainment. The structured summary at the end is for transcription only; keep it terse.
+
+# CONSTRAINTS YOU MUST FOLLOW
+- All 4 suits appear exactly once across the chain (one card per suit).
+- targetHero must match the suit binding (CONTROL→Rascal, EMOTION→Goose, ASPIRATION→Denny, EXTRACTION→Beholda).
+- cardName must be a real card from the deck you were given.
+- Don't replay cards already in your exhausted list (those have been spent).
+- One lackey order per alive lackey shown in the state block.
+- A taunted enemy's lackey order MUST target Denny.`;
 }
 
 function buildUserTurn(state, history, currentRound = {}) {

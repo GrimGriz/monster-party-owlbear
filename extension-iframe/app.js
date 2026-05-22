@@ -141,7 +141,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-21-batch-b-hero-phase-r8';
+const BUILD_TAG = '2026-05-22-voice-paste-r10';
 
 main();
 
@@ -344,6 +344,49 @@ async function registerTokenTaggingMenu() {
 // Either matching is enough, so a Monk-asset token labelled "Denny" works,
 // AND a token already named "Piratebeholda" works. Substring match,
 // case-insensitive. Returns the tag to write, or null if no rule fires.
+// Registry of known lackey archetypes. Matched by substring against the
+// token's asset name + text overlay. Used by autoDetectRoleFromItem on the
+// "Add to extension" right-click. Order matters — more-specific matchers
+// first so e.g. "Alex Jones-Bot" hits the Alex-Jones entry before any
+// generic fallback. Adding a new archetype: push an entry here.
+//
+// suit: null → non-card-user (no Save/Fail mechanic, only Basic atk).
+//              Forced SP=0 at default; the lackey-row UI's outOfSp branch
+//              renders Basic-only.
+// basicDmg:  damage on a Basic attack (replaces the legacy hardcoded 15).
+const LACKEY_REGISTRY = [
+  // Card-using influencer lackeys (battle-info §6).
+  { match: (h) => h.includes('alex') && h.includes('jones'),
+    archetype: 'Alex-Jones-Bot', suit: 'EMOTION', hp: 50, sp: 2, basicDmg: 10 },
+  { match: (h) => h.includes('hasan') && h.includes('piker'),
+    archetype: 'Hasan-Piker-Bot', suit: 'CONTROL', hp: 50, sp: 2, basicDmg: 10 },
+  { match: (h) => h.includes('aspiration'),
+    archetype: 'ASPIRATION lackey', suit: 'ASPIRATION', hp: 50, sp: 2, basicDmg: 10 },
+  { match: (h) => h.includes('extraction'),
+    archetype: 'EXTRACTION lackey', suit: 'EXTRACTION', hp: 50, sp: 2, basicDmg: 10 },
+  // Non-card-using mooks (battle-info §6 + 5-21-encounter-design.md §3).
+  // Soda monsters: ~30 HP, ranged 10 dmg, AoE special (special not modelled
+  // in v1 — GM resolves narratively if used).
+  { match: (h) => h.includes('soda'),
+    archetype: 'Soda Monster', suit: null, hp: 30, sp: 0, basicDmg: 10 },
+  // Baked potatoes: tier-1 mook, ~15 HP, 10 dmg.
+  { match: (h) => h.includes('potato'),
+    archetype: 'Baked Potato', suit: null, hp: 15, sp: 0, basicDmg: 10 },
+];
+
+function lackeyTagFromRegistry(entry) {
+  return {
+    role: 'lackey',
+    suit: entry.suit, // null for non-card-users — serializer surfaces as-is
+    archetype: entry.archetype,
+    alive: true,
+    cardsExhausted: [],
+    basicDmg: entry.basicDmg,
+    // Stat Bubbles will get hp/sp written on the tag-write path (see
+    // writeTagToSelection's STAT_BUBBLES_NAMESPACE handling).
+  };
+}
+
 function autoDetectRoleFromItem(item) {
   const haystack = [
     item?.name || '',
@@ -362,18 +405,9 @@ function autoDetectRoleFromItem(item) {
     return { role: 'boss', cardsExhausted: [], tauntedTo: false };
   }
 
-  // Lackeys — known archetypes first, then bare suit names.
-  if (haystack.includes('alex') && haystack.includes('jones')) {
-    return { role: 'lackey', suit: 'EMOTION', archetype: 'Alex-Jones-Bot', alive: true, cardsExhausted: [] };
-  }
-  if (haystack.includes('hasan') && haystack.includes('piker')) {
-    return { role: 'lackey', suit: 'CONTROL', archetype: 'Hasan-Piker-Bot', alive: true, cardsExhausted: [] };
-  }
-  if (haystack.includes('aspiration')) {
-    return { role: 'lackey', suit: 'ASPIRATION', archetype: 'ASPIRATION lackey', alive: true, cardsExhausted: [] };
-  }
-  if (haystack.includes('extraction')) {
-    return { role: 'lackey', suit: 'EXTRACTION', archetype: 'EXTRACTION lackey', alive: true, cardsExhausted: [] };
+  // Lackeys — walk the registry.
+  for (const entry of LACKEY_REGISTRY) {
+    if (entry.match(haystack)) return lackeyTagFromRegistry(entry);
   }
 
   // Crystals — three colors per battle-info §5. Match on color + "crystal"
@@ -388,6 +422,35 @@ function autoDetectRoleFromItem(item) {
   return null;
 }
 
+// Fallback when autoDetect returns null — prompt the GM for a generic lackey
+// shape (HP + basic dmg). Used for mid-fight subminion adds that aren't in
+// the registry. Returns a tag (and HP/SP for Stat Bubbles) or null on cancel.
+function promptForGenericLackey(displayName) {
+  const input = prompt(
+    `Token "${displayName}" didn't match a known archetype. Tag as a generic lackey?\n\n` +
+    `Enter: HP, basic-dmg\n(e.g. "30,10"). Cancel to skip.`,
+    '30,10',
+  );
+  if (input == null) return null;
+  const [hpStr, dmgStr] = input.split(',').map((s) => s.trim());
+  const hp = parseInt(hpStr, 10);
+  const dmg = parseInt(dmgStr, 10);
+  if (!Number.isFinite(hp) || hp <= 0) return null;
+  const basicDmg = Number.isFinite(dmg) && dmg > 0 ? dmg : 10;
+  return {
+    tag: {
+      role: 'lackey',
+      suit: null, // non-card-user
+      archetype: displayName || 'Lackey',
+      alive: true,
+      cardsExhausted: [],
+      basicDmg,
+    },
+    hp,
+    sp: 0,
+  };
+}
+
 async function handleAddClick(items) {
   if (!items.length) {
     console.log('[MP] mp-add click → no items selected');
@@ -396,18 +459,29 @@ async function handleAddClick(items) {
   for (const item of items) {
     const assetName = item?.name || '';
     const textName = item?.text?.plainText || '';
-    const tag = autoDetectRoleFromItem(item);
+    let tag = autoDetectRoleFromItem(item);
+    let seed = null;
     if (!tag) {
-      console.warn(
-        `[MP] mp-add: no role match for asset="${assetName}" text="${textName}" (id=${item.id}). ` +
-        `Edit the token text (right-click → Edit Text) to include one of: ` +
-        `Denny, Beholda, Rascal, Goose, Algorithm, Alex-Jones, Hasan-Piker, ` +
-        `ASPIRATION, EXTRACTION — then retry. (Asset name also works.)`,
-      );
-      continue;
+      // No registry match — prompt the GM for a generic lackey (mid-fight
+      // subminions Griz drops in on the fly). Cancel skips this token.
+      const generic = promptForGenericLackey(textName || assetName || 'token');
+      if (!generic) {
+        console.warn(
+          `[MP] mp-add: no match + no manual tag for asset="${assetName}" text="${textName}" (id=${item.id}). ` +
+          `Skipped.`,
+        );
+        continue;
+      }
+      tag = generic.tag;
+      seed = { hp: generic.hp, sp: generic.sp };
+    } else if (tag.role === 'lackey') {
+      // Registry-known lackey — pull its HP/SP defaults so writeTagToSelection
+      // can seed Stat Bubbles when the GM hasn't set those up on the token.
+      const entry = LACKEY_REGISTRY.find((e) => e.archetype === tag.archetype);
+      if (entry) seed = { hp: entry.hp, sp: entry.sp };
     }
-    console.log(`[MP] mp-add: asset="${assetName}" text="${textName}" → ${tag.role}:${tag.name || tag.archetype || 'boss'}`);
-    await writeTagToSelection([item], tag);
+    console.log(`[MP] mp-add: asset="${assetName}" text="${textName}" → ${tag.role}:${tag.name || tag.archetype || 'boss'}${seed ? ` (seed HP=${seed.hp} SP=${seed.sp})` : ''}`);
+    await writeTagToSelection([item], tag, seed);
   }
 }
 
@@ -460,7 +534,7 @@ function defaultPcTag(name) {
   };
 }
 
-async function writeTagToSelection(items, tag) {
+async function writeTagToSelection(items, tag, seed = null) {
   if (!items?.length) return;
   const ids = items.map((it) => it.id);
   await OBR.scene.items.updateItems(ids, (drafts) => {
@@ -469,6 +543,23 @@ async function writeTagToSelection(items, tag) {
         delete draft.metadata[METADATA_NAMESPACE];
       } else {
         draft.metadata[METADATA_NAMESPACE] = tag;
+        // Optional seed for Stat Bubbles HP/SP — only writes if the token
+        // doesn't already have these set (so we don't clobber a GM-configured
+        // bubble). Used for mid-fight subminion adds where the token hasn't
+        // had Stat Bubbles set up yet.
+        if (seed) {
+          const sb = draft.metadata[STAT_BUBBLES_NAMESPACE] || {};
+          if (typeof sb.health !== 'number' && typeof seed.hp === 'number') {
+            sb.health = seed.hp;
+          }
+          if (typeof sb['max health'] !== 'number' && typeof seed.hp === 'number') {
+            sb['max health'] = seed.hp;
+          }
+          if (typeof sb['temporary health'] !== 'number' && typeof seed.sp === 'number') {
+            sb['temporary health'] = seed.sp;
+          }
+          draft.metadata[STAT_BUBBLES_NAMESPACE] = sb;
+        }
       }
     }
   });
@@ -489,12 +580,9 @@ async function writeTagToSelection(items, tag) {
 // ----- UI binding -----
 
 function bindUi() {
-  $('save-settings').addEventListener('click', () => {
-    localStorage.setItem(STORAGE_KEYS.apiKey, $('api-key').value.trim());
-    localStorage.setItem(STORAGE_KEYS.model, $('model').value);
-    $('settings-status').textContent = 'saved.';
-    setTimeout(() => { $('settings-status').textContent = ''; }, 2000);
-  });
+  // (API-key Settings UI removed in r9 — voice-paste workflow replaces the
+  // API call. The API key/model storage keys remain in STORAGE_KEYS for
+  // backward compat if a future build wants to restore the API path.)
 
   $('ov-round').addEventListener('change', (e) => {
     state.overrides.round = parseInt(e.target.value, 10) || 1;
@@ -525,7 +613,9 @@ function bindUi() {
     if (slot) slot.addEventListener('click', () => onCrystalSlotClick(color));
   }
 
-  $('generate-chain').addEventListener('click', generateChain);
+  $('copy-battle-info').addEventListener('click', copyBattleInfoToClipboard);
+  $('copy-system-prompt').addEventListener('click', copySystemPromptToClipboard);
+  $('log-voice-chain').addEventListener('click', logChainFromVoiceSummary);
   $('clear-chain').addEventListener('click', () => {
     state.pendingChain = null;
     savePendingChain();
@@ -542,10 +632,9 @@ function bindUi() {
 }
 
 function hydrateSettings() {
-  const k = localStorage.getItem(STORAGE_KEYS.apiKey);
-  if (k) $('api-key').value = k;
-  const m = localStorage.getItem(STORAGE_KEYS.model);
-  if (m) $('model').value = m;
+  // No-op since the API-key Settings UI was removed in r9. Stub kept so
+  // initial bootstrap order in init() doesn't break. Voice-paste workflow
+  // needs no per-user settings state.
 }
 
 function hydrateOverridesUi() {
@@ -1357,7 +1446,12 @@ function renderLackeyAttacksBlock() {
       .join('');
 
     const sp = l.specialsRemaining ?? 0;
-    const outOfSp = sp <= 0;
+    // suit=null → non-card-user (soda monster / generic subminion). Force
+    // basic-only render regardless of SP since there's no card-suit save
+    // mechanic to gate Save/Fail on.
+    const outOfSp = sp <= 0 || !l.suit;
+    const basicDmg = l.basicDmg ?? 15;
+    const suitLabel = l.suit || 'mook';
 
     const row = document.createElement('div');
     row.className = 'lackey-attack-row' + (existing?.result ? ' resolved' : '');
@@ -1373,18 +1467,19 @@ function renderLackeyAttacksBlock() {
       // Basic melee fallback per battle-info §6: 15 dmg when out of specials.
       const targetAppliedCls = existing?.mode === 'basic' ? ' resolved' : '';
       row.classList.toggle('resolved', !!existing?.result);
+      const outLabel = l.suit ? 'out of SP' : 'non-card-user';
       row.innerHTML = `
         <div>
           <strong>${escapeHtml(l.archetype)}</strong>
-          <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, BASIC)</span>
+          <span class="muted">(${escapeHtml(suitLabel)}, ${l.hp} HP, BASIC)</span>
           ${tauntFlag}
           ${villainIntent}
         </div>
         <select data-target>${targetOptions}</select>
         <button class="failed" data-result="basic"${existing?.mode === 'basic' ? ' disabled' : ''}>
-          ${existing?.mode === 'basic' ? `✓ Basic ${existing.appliedHp || 15}` : 'Basic atk 15'}
+          ${existing?.mode === 'basic' ? `✓ Basic ${existing.appliedHp || basicDmg}` : `Basic atk ${basicDmg}`}
         </button>
-        <span class="muted" style="font-size:10px;">out of SP</span>
+        <span class="muted" style="font-size:10px;">${outLabel}</span>
       `;
       row.querySelector('select[data-target]').addEventListener('change', (e) => {
         if (existing?.mode === 'basic') upsertLackeyAttack(l, e.target.value, 'basic', 'basic');
@@ -1403,14 +1498,14 @@ function renderLackeyAttacksBlock() {
       row.innerHTML = `
         <div>
           <strong>${escapeHtml(l.archetype)}</strong>
-          <span class="muted">(${escapeHtml(l.suit || '?')}, ${l.hp} HP, SP ${sp})</span>
+          <span class="muted">(${escapeHtml(suitLabel)}, ${l.hp} HP, SP ${sp})</span>
           ${tauntFlag}
           ${villainIntent}
         </div>
         <select data-target>${targetOptions}</select>
         <button class="saved" data-result="save">${existing?.result === 'save' && existing?.mode !== 'basic' ? '✓ Saved' : 'Save'}</button>
         <button class="failed" data-result="fail">${existing?.result === 'fail' && existing?.mode !== 'basic' ? '✓ Failed' : 'Fail'}</button>
-        <button class="failed" data-result="basic">${basicMarked ? `✓ Basic ${existing.appliedHp || 15}` : 'Basic atk 15'}</button>
+        <button class="failed" data-result="basic">${basicMarked ? `✓ Basic ${existing.appliedHp || basicDmg}` : `Basic atk ${basicDmg}`}</button>
       `;
       row.querySelector('select[data-target]').addEventListener('change', (e) => {
         if (existing?.result) {
@@ -1439,8 +1534,9 @@ async function upsertLackeyAttack(lackey, target, result, mode = 'special') {
 
   // Compute the damage that goes with the new (target, result, mode).
   const binding = SUIT_BINDING[lackey.suit] || { fullDmg: 12, halfDmg: 6 };
+  const basicDmg = lackey.basicDmg ?? 15;
   let newDmg = 0;
-  if (mode === 'basic') newDmg = 15;
+  if (mode === 'basic') newDmg = basicDmg;
   else if (result === 'save') newDmg = binding.halfDmg;
   else if (result === 'fail') newDmg = binding.fullDmg;
 
@@ -1974,6 +2070,124 @@ function renderErrorBanner(msg) {
   banner.textContent = msg;
   banner.style.padding = '12px';
   document.body.prepend(banner);
+}
+
+// ----- Voice-mode copy helpers -----
+
+function copyBattleInfoToClipboard() {
+  const bs = currentBattleState();
+  const { messages } = buildVillainPrompt(bs, state.history, state.currentRound, { voiceMode: true });
+  const text = messages[0]?.content || '';
+  copyTextToClipboard(text).then(
+    (method) => setChainStatus(`Battle info copied (${method}). Paste into voice-mode Claude.`),
+    (err) => setChainStatus(`Copy failed: ${err.message || err}`, true),
+  );
+}
+
+function copySystemPromptToClipboard() {
+  const bs = currentBattleState();
+  const { system } = buildVillainPrompt(bs, state.history, state.currentRound, { voiceMode: true });
+  copyTextToClipboard(system).then(
+    (method) => {
+      const el = $('system-prompt-status');
+      if (el) {
+        el.textContent = `Copied (${method}). Paste once at conversation start.`;
+        el.style.color = '';
+        setTimeout(() => { if (el.textContent.startsWith('Copied')) el.textContent = ''; }, 4000);
+      }
+    },
+    (err) => {
+      const el = $('system-prompt-status');
+      if (el) { el.textContent = `Copy failed: ${err.message || err}`; el.style.color = '#ff8866'; }
+    },
+  );
+}
+
+// Parse voice-Claude's structured summary block into pendingChain. Tolerant
+// of comma OR semicolon separators between entries, case-insensitive section
+// headers, and missing optional sections. Returns null on parse error.
+function parseVoiceSummary(text) {
+  if (!text || typeof text !== 'string') return null;
+  const out = { chain: [], lackeyOrders: [], interrupt: null, strategicNote: '' };
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const chainMatch = line.match(/^CHAIN\s*:\s*(.+)$/i);
+    if (chainMatch) {
+      const entries = chainMatch[1].split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+      out.chain = entries.map((entry, i) => {
+        const m = entry.match(/^(\w+)\s+(.+?)\s*(?:→|->|-->|=>)\s*(\w+)\s*$/);
+        if (!m) return null;
+        return {
+          order: i + 1,
+          suit: m[1].toUpperCase(),
+          cardName: m[2].trim(),
+          targetHero: m[3].trim(),
+          ragePost: '',
+          reasoning: '',
+        };
+      }).filter(Boolean);
+      continue;
+    }
+    const lackeyMatch = line.match(/^LACKEYS?\s*:\s*(.+)$/i);
+    if (lackeyMatch) {
+      const entries = lackeyMatch[1].split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+      out.lackeyOrders = entries.map((entry) => {
+        const m = entry.match(/^(.+?)\s*(?:→|->|-->|=>)\s*(\w+)\s*$/);
+        if (!m) return null;
+        return { lackeyId: m[1].trim(), targetHero: m[2].trim(), intent: '' };
+      }).filter(Boolean);
+      continue;
+    }
+    const interruptMatch = line.match(/^INTERRUPT\s*:\s*(\w+)\s+(.+)$/i);
+    if (interruptMatch) {
+      out.interrupt = { suit: interruptMatch[1].toUpperCase(), cardName: interruptMatch[2].trim() };
+      continue;
+    }
+    const noteMatch = line.match(/^NOTE\s*:\s*(.+)$/i);
+    if (noteMatch) {
+      out.strategicNote = noteMatch[1].trim();
+      continue;
+    }
+  }
+  return out;
+}
+
+async function logChainFromVoiceSummary() {
+  const text = $('voice-summary-input').value;
+  const setStatus = (msg, isErr = false) => {
+    const el = $('voice-log-status');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = isErr ? '#ff8866' : '';
+  };
+  const parsed = parseVoiceSummary(text);
+  if (!parsed || !parsed.chain.length) {
+    setStatus('Could not find a CHAIN line. Paste the full summary block (CHAIN, LACKEYS, etc.)', true);
+    return;
+  }
+  if (parsed.chain.length !== 4) {
+    setStatus(`Expected 4 chain entries, parsed ${parsed.chain.length}. Check the CHAIN line format.`, true);
+    return;
+  }
+  const bs = currentBattleState();
+  state.pendingChain = {
+    generatedAt: new Date().toISOString(),
+    round: bs.round,
+    startHp: snapshotHp(bs),
+    chain: parsed.chain.map((c) => ({ ...c, result: null, skipped: false })),
+    lackeyOrders: parsed.lackeyOrders || [],
+    interrupt: parsed.interrupt || null, // batch 3 (#10) will wire this into the interrupt UI
+    monologueIfChainCompletes: '',
+    strategicNote: parsed.strategicNote || '',
+    chainCompleted: false,
+  };
+  savePendingChain();
+  setStatus(`Logged: ${parsed.chain.length} cards, ${parsed.lackeyOrders.length} lackey orders.`);
+  // Clear the textarea so a re-paste later doesn't double-log.
+  $('voice-summary-input').value = '';
+  renderAll();
 }
 
 // ----- Chain flow -----
