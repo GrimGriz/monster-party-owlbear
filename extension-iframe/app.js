@@ -12,7 +12,7 @@ import {
   METADATA_NAMESPACE,
   STAT_BUBBLES_NAMESPACE,
 } from '../state-pipe/serializer.js';
-import { SUIT_BINDING } from '../state-pipe/cards-by-target.js';
+import { SUIT_BINDING, BY_SUIT, availableCardsForSuit, CARDS } from '../state-pipe/cards-by-target.js';
 import {
   buildVillainPrompt,
   parseVillainResponse,
@@ -29,6 +29,7 @@ const STORAGE_KEYS = {
   history: 'mp-villain.history',
   pendingChain: 'mp-villain.pendingChain',
   currentRound: 'mp-villain.currentRound',
+  pendingInterrupt: 'mp-villain.pendingInterrupt',
 };
 
 // Locked boss-fight specials per PC (mechanics-audit-2026-05-18 §2 / battle-info §2).
@@ -107,6 +108,7 @@ const state = {
   overrides: loadOverrides(),
   history: loadHistory(),
   pendingChain: loadPendingChain(),
+  pendingInterrupt: loadPendingInterrupt(),
   currentRound: loadCurrentRound(),
 };
 
@@ -141,7 +143,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // Build tag — log at boot so we can verify the right bundle loaded inside
 // OBR's iframe (browser may serve a cached app.js when Ctrl+Shift+R reloads
 // OBR's outer page without busting the iframe's cache).
-const BUILD_TAG = '2026-05-22-voice-paste-r10';
+const BUILD_TAG = '2026-05-22-interrupt-r11';
 
 main();
 
@@ -654,6 +656,7 @@ function renderAll() {
   renderState();
   renderHeroPhase();
   renderLackeyAttacksBlock();
+  renderInterrupt();
   renderChain();
   renderHistory();
   renderRoundFinalizeVisibility();
@@ -981,6 +984,8 @@ async function addAoeTarget(primaryIdx, enemyName) {
       saveCurrentRound();
       renderAll();
     }
+    // Spawn the interrupt UI (idempotent — only one per round).
+    ensureInterruptForThisRound();
     await syncRascalExtraCards().catch((err) =>
       log(`rascalExtraCards sync failed: ${err?.message || err}`),
     );
@@ -1343,6 +1348,8 @@ async function dispatchSideEffect(pcName, action, target) {
           `Hero phase continues for unstunned PCs. +N extra cards next round (N = die-successes on the cast).`,
         );
         triggerNote = `→ algo interrupts, +N cards next round`;
+        // Spawn the interrupt UI — auto-picks suit by current taunt state.
+        ensureInterruptForThisRound();
       }
 
       return {
@@ -1996,6 +2003,233 @@ function renderChain() {
   }
 }
 
+// ----- Interrupt mechanic (Rascal Fireball at Algo → algo reaction card) -----
+//
+// Auto-fires when a Fireball action lands on Algorithm (primary OR AoE). Suit
+// auto-picks: EXTRACTION (Beholda's suit) unless boss.tauntedTo === 'Denny',
+// in which case ASPIRATION. UI has three states:
+//   1. Picker      — list unexhausted cards from the suit as name buttons.
+//   2. Flipped     — show the full picked card; GM acts it out for the table.
+//   3. Resolution  — per-PC Save/Fail buttons. Each PC saves vs their OWN
+//                    suit's DC; damage = PC's own-suit full/half. Stun on fail
+//                    stamped with stunnedAt = currentRound - 1 so it ages out
+//                    at end of THIS hero phase (mid-phase stun blocks remaining
+//                    round-N actions; doesn't carry into round N+1).
+// Interrupt cards do NOT exhaust on use (the algorithm pulls reactionary
+// content; chain pool is preserved for future rounds).
+
+function ensureInterruptForThisRound() {
+  // Guard: only one interrupt per round. If already present, no-op.
+  if (state.pendingInterrupt) return;
+  const bs = currentBattleState();
+  const suit = bs.boss?.tauntedTo === 'Denny' ? 'ASPIRATION' : 'EXTRACTION';
+  // If voice-Claude pre-declared an interrupt card in pendingChain (parsed
+  // from the voice summary block), pre-fill so the GM lands straight on the
+  // flipped card view. Otherwise show the picker.
+  const preDeclared = state.pendingChain?.interrupt;
+  const preCard = preDeclared?.suit === suit ? preDeclared.cardName : null;
+  state.pendingInterrupt = {
+    suit,
+    cardName: preCard || null,
+    flipped: !!preCard, // flip open if we have a pre-pick to show
+    saves: { Denny: null, Beholda: null, Rascal: null, Goose: null },
+    triggeredAtRound: bs.round,
+  };
+  savePendingInterrupt();
+}
+
+function pickInterruptCard(cardName) {
+  if (!state.pendingInterrupt) return;
+  state.pendingInterrupt.cardName = cardName;
+  state.pendingInterrupt.flipped = true; // open straight to the full card so GM can act it out
+  savePendingInterrupt();
+  renderAll();
+}
+
+function flipInterruptCard() {
+  if (!state.pendingInterrupt) return;
+  state.pendingInterrupt.flipped = !state.pendingInterrupt.flipped;
+  savePendingInterrupt();
+  renderAll();
+}
+
+function cancelInterrupt() {
+  if (!state.pendingInterrupt) return;
+  // Reverse any applied damage / stun before clearing.
+  const interrupt = state.pendingInterrupt;
+  for (const pc of PC_ROSTER) {
+    if (interrupt.saves[pc]) {
+      // No-op — reversals happen per-click on each PC if GM wants to undo.
+      // For a full cancel we just clear; manual undo via re-click is the
+      // intended path. (Cancel is for "I didn't mean to fire this.")
+    }
+  }
+  state.pendingInterrupt = null;
+  savePendingInterrupt();
+  renderAll();
+}
+
+async function resolveInterruptSave(pcName, result) {
+  const interrupt = state.pendingInterrupt;
+  if (!interrupt || !interrupt.cardName) return;
+  const prev = interrupt.saves[pcName];
+  if (prev === result) return; // no change
+  // Each PC saves vs their OWN suit's full/half dmg. The interrupt card's
+  // suit only sets the SUIT (which decides which deck the GM picks from);
+  // damage scales to the saver, not the card.
+  const pcSuitByName = {
+    Denny: 'ASPIRATION', Beholda: 'EXTRACTION', Rascal: 'CONTROL', Goose: 'EMOTION',
+  };
+  const pcBinding = SUIT_BINDING[pcSuitByName[pcName]];
+  if (!pcBinding) return;
+  // Reverse the previous result's damage + stun (idempotent re-clicks).
+  if (prev === 'fail') {
+    await applyHpDelta(pcName, +pcBinding.fullDmg).catch(() => {});
+    await setPcStunned(pcName, false).catch(() => {});
+  } else if (prev === 'save') {
+    await applyHpDelta(pcName, +pcBinding.halfDmg).catch(() => {});
+  }
+  // Apply the new result.
+  if (result === 'fail') {
+    await applyHpDelta(pcName, -pcBinding.fullDmg);
+    // Interrupt stun stamps stunnedAt = currentRound - 1 so ageStuns at end
+    // of THIS hero phase clears it (blocks any remaining round-N action;
+    // doesn't carry into round N+1).
+    await setPcStunned(pcName, true, state.overrides.round - 1);
+  } else if (result === 'save') {
+    await applyHpDelta(pcName, -pcBinding.halfDmg);
+  }
+  interrupt.saves[pcName] = result;
+  savePendingInterrupt();
+  renderAll();
+}
+
+function renderInterrupt() {
+  const root = $('interrupt-block');
+  if (!root) return;
+  root.innerHTML = '';
+  const interrupt = state.pendingInterrupt;
+  if (!interrupt) return;
+  const suit = interrupt.suit;
+  const suitBinding = SUIT_BINDING[suit];
+  const suitTarget = suitBinding?.hero || '?';
+  const exhausted = currentBattleState().boss?.cardsExhausted || [];
+  const available = availableCardsForSuit(suit, exhausted);
+  const pickedCard = interrupt.cardName ? CARDS.find((c) => c.name === interrupt.cardName) : null;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'interrupt-block';
+  wrap.style.cssText = 'border: 2px solid #d4283f; border-radius: 6px; padding: 12px; margin-bottom: 12px; background: #1a0d12;';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;';
+  header.innerHTML = `
+    <strong style="color:#ff8866; letter-spacing:0.1em;">⚡ ALGORITHM INTERRUPT</strong>
+    <span class="muted" style="font-size:11px;">Suit: ${suit} (natural target ${suitTarget}). Card does NOT exhaust.</span>
+  `;
+  wrap.appendChild(header);
+
+  if (!pickedCard) {
+    // STATE 1 — Picker
+    const help = document.createElement('div');
+    help.className = 'muted';
+    help.style.cssText = 'font-size:11px; margin-bottom:8px;';
+    help.textContent = 'Pick the card the algorithm pulls. Click → flips to show the full card so you can act it out.';
+    wrap.appendChild(help);
+
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap;';
+    for (const card of available) {
+      const btn = document.createElement('button');
+      btn.textContent = card.name;
+      btn.style.cssText = 'font-size:12px; padding:6px 10px;';
+      btn.addEventListener('click', () => pickInterruptCard(card.name));
+      grid.appendChild(btn);
+    }
+    if (!available.length) {
+      grid.innerHTML = '<span class="muted">No unexhausted cards in this suit — the algorithm has no fresh content here.</span>';
+    }
+    wrap.appendChild(grid);
+  } else if (interrupt.flipped) {
+    // STATE 2 — Flipped card view
+    const card = pickedCard;
+    const cardEl = document.createElement('div');
+    cardEl.style.cssText = `
+      background: #15151c;
+      border: 2px solid ${suitBinding?.color === 'purple' ? '#8e44ad' : suitBinding?.color === 'gold' ? '#d4af37' : suitBinding?.color === 'red' ? '#d4283f' : '#e67e22'};
+      border-radius: 8px;
+      padding: 16px;
+      margin: 8px 0;
+      cursor: pointer;
+      max-width: 360px;
+    `;
+    cardEl.innerHTML = `
+      <div style="text-align:center; font-size:11px; color:#8a8a99; letter-spacing:0.15em; text-transform:uppercase; margin-bottom:6px;">${escapeHtml(card.suit)}</div>
+      <div style="text-align:center; font-size:28px; font-weight:800; letter-spacing:0.08em; margin-bottom:8px;">${escapeHtml(card.name)}</div>
+      <div style="text-align:center; font-size:11px; color:#9999a8; margin-bottom:12px;">${escapeHtml(card.archetype)}</div>
+      <div style="font-size:12px; line-height:1.4; color:#c8c8d4;">${escapeHtml(card.mechanic)}</div>
+      <div class="muted" style="font-size:10px; margin-top:12px; text-align:center;">click to flip back → resolve saves</div>
+    `;
+    cardEl.addEventListener('click', flipInterruptCard);
+    wrap.appendChild(cardEl);
+  } else {
+    // STATE 3 — Resolution (per-PC saves)
+    const card = pickedCard;
+    const summary = document.createElement('div');
+    summary.style.cssText = 'margin-bottom:10px;';
+    summary.innerHTML = `
+      <div style="display:flex; gap:8px; align-items:baseline;">
+        <strong style="font-size:14px;">${escapeHtml(card.name)}</strong>
+        <span class="muted" style="font-size:11px;">${escapeHtml(card.suit)} · ${escapeHtml(card.archetype)}</span>
+        <button id="interrupt-reflip" class="ghost" style="font-size:10px; padding:2px 6px; margin-left:auto;">show card again</button>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:4px;">Every PC saves independently vs their own suit DC. No chain break.</div>
+    `;
+    wrap.appendChild(summary);
+
+    const savesGrid = document.createElement('div');
+    savesGrid.style.cssText = 'display:grid; grid-template-columns: 1fr auto auto; gap:6px; align-items:center;';
+    const pcSuitByName = {
+      Denny: 'ASPIRATION', Beholda: 'EXTRACTION', Rascal: 'CONTROL', Goose: 'EMOTION',
+    };
+    for (const pcName of PC_ROSTER) {
+      const pcBinding = SUIT_BINDING[pcSuitByName[pcName]];
+      const result = interrupt.saves[pcName];
+      const label = document.createElement('div');
+      label.innerHTML = `
+        <strong>${escapeHtml(pcName)}</strong>
+        <span class="muted" style="font-size:11px; margin-left:6px;">${pcBinding.save} save vs DC ${pcBinding.baseDC} · ${pcBinding.fullDmg}/${pcBinding.halfDmg} dmg</span>
+      `;
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'saved';
+      saveBtn.style.cssText = 'font-size:11px; padding:4px 8px;';
+      saveBtn.textContent = result === 'save' ? `✓ Saved (${pcBinding.halfDmg})` : 'Save';
+      saveBtn.addEventListener('click', () => resolveInterruptSave(pcName, 'save'));
+      const failBtn = document.createElement('button');
+      failBtn.className = 'failed';
+      failBtn.style.cssText = 'font-size:11px; padding:4px 8px;';
+      failBtn.textContent = result === 'fail' ? `✓ Failed (${pcBinding.fullDmg} + stun)` : 'Fail';
+      failBtn.addEventListener('click', () => resolveInterruptSave(pcName, 'fail'));
+      savesGrid.appendChild(label);
+      savesGrid.appendChild(saveBtn);
+      savesGrid.appendChild(failBtn);
+    }
+    wrap.appendChild(savesGrid);
+
+    summary.querySelector('#interrupt-reflip')?.addEventListener('click', flipInterruptCard);
+  }
+
+  // Cancel button always available (lets GM bail on a misfire).
+  const cancel = document.createElement('button');
+  cancel.className = 'ghost';
+  cancel.style.cssText = 'font-size:10px; padding:3px 8px; margin-top:10px;';
+  cancel.textContent = 'Cancel interrupt';
+  cancel.addEventListener('click', cancelInterrupt);
+  wrap.appendChild(cancel);
+
+  root.appendChild(wrap);
+}
+
 function renderHistory() {
   const list = $('history-list');
   list.innerHTML = '';
@@ -2393,6 +2627,11 @@ function endRound() {
   saveOverrides();
   state.pendingChain = null;
   savePendingChain();
+  // Clear any pending interrupt — interrupts are per-round, so even if the GM
+  // forgot to resolve one before End Round, dropping it on the floor here is
+  // safer than carrying stale interrupt UI into the next round.
+  state.pendingInterrupt = null;
+  savePendingInterrupt();
   state.currentRound = emptyCurrentRound();
   saveCurrentRound();
   if (heroSummaryInput) heroSummaryInput.value = '';
@@ -2539,6 +2778,21 @@ function loadHistory() {
 }
 function saveHistory() {
   localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(state.history));
+}
+
+function loadPendingInterrupt() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.pendingInterrupt);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
+
+function savePendingInterrupt() {
+  if (state.pendingInterrupt) {
+    localStorage.setItem(STORAGE_KEYS.pendingInterrupt, JSON.stringify(state.pendingInterrupt));
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.pendingInterrupt);
+  }
 }
 
 function loadPendingChain() {
